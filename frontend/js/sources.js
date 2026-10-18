@@ -12,6 +12,7 @@ export class SourceManager {
         this.onChanged = onChanged || (() => {});
         this.sources = [];
         this.tasks = {};
+        this._activeIds = new Set();   // 上一轮轮询时还在跑的任务 id（用于完成Toast）
         this.pollTimer = null;
         this.render();
     }
@@ -39,6 +40,8 @@ export class SourceManager {
                 const data = await api('/api/tasks');
                 this.tasks = {};
                 let running = false;
+                const finishedNow = [];
+                const active = new Set();
                 // data.tasks 已按 id 降序（最新在前）；同源只取最新任务，
                 // 否则历史 done 任务会覆盖当前 paused/running 状态
                 for (const t of data.tasks || []) {
@@ -46,25 +49,50 @@ export class SourceManager {
                     this.tasks[t.source_id] = t;
                     if (t.state === 'pending' || t.state === 'running' || t.state === 'paused') {
                         running = true;
+                        active.add(t.id);
                     } else {
                         // 任务终结（done/cancelled/failed）：重置前端状态机，
                         // 否则 UI 会永远卡在「扫描中」
                         if (this._scanState[t.source_id] === 'scanning') {
                             this._scanState[t.source_id] = 'idle';
                         }
+                        // 只统计「这一轮刚结束」的任务，避免把几年前的历史
+                        // done 任务也算进完成 Toast
+                        if (this._activeIds.has(t.id)) finishedNow.push(t);
                     }
                 }
+                this._activeIds = active;
                 this.render();
                 if (!running && this._wasRunning) {
                     this._wasRunning = false;
                     this.onChanged();
-                    showToast('扫描完成', 'ok');
+                    this._toastScanResult(finishedNow);
+                    // 关键：源快照停在「开扫前」（scan_running=true、last_scan_at=null、
+                    // resumable=false），不重新拉一次的话卡片会永远停留在「扫描中」——
+                    // 轮询已停、render 又走原地更新分支，done 状态永远渲染不出来。
+                    await this.load();
                 }
                 if (running) this._wasRunning = true;
                 if (!running) this.stopPolling();
             } catch { this.stopPolling(); }
         }, 1500);
         this.pollTimer.unref?.();
+    }
+
+    /** 扫描结束后的汇总 Toast：增量扫描要能看出「未变」占了多少。 */
+    _toastScanResult(finished) {
+        const dones = finished.filter(t => t.state === 'done');
+        if (dones.length === 1) {
+            const t = dones[0];
+            const parts = [`新增 ${t.added ?? 0}`, `更新 ${t.updated ?? 0}`,
+                           `未变 ${t.unchanged ?? 0}`];
+            if (t.removed) parts.push(`移除 ${t.removed}`);
+            showToast(`扫描完成 · ${parts.join(' · ')}`, 'ok');
+        } else if (dones.length > 1) {
+            showToast(`${dones.length} 个数据源扫描完成`, 'ok');
+        } else {
+            showToast('扫描结束', 'warn');
+        }
     }
 
     stopPolling() {
@@ -97,8 +125,12 @@ export class SourceManager {
             const s = this.sources.find(x => x.id === sid);
             const task = this.tasks[sid];
             if (!s) return false;
-            const scanning = s.scan_running
-                || (task && ['pending', 'running'].includes(task.state))
+            // 任务状态优先于源快照的 scan_running：快照可能停在开扫前
+            // （轮询期间不刷新 sources），只看 scan_running 会把已完成的
+            // 卡片永远钉在「扫描中」。有任务记录时以它为准；没有任务记录
+            // （刷新页面后首次拉取前）才退回 scan_running。
+            const scanning = (task && ['pending', 'running'].includes(task.state))
+                || (!task && s.scan_running)
                 || this._scanState[sid] === 'scanning';
             const paused = task && task.state === 'paused';
             const statusEl = node.querySelector('.src-status');
@@ -116,7 +148,7 @@ export class SourceManager {
             if (text) {
                 text.textContent = paused
                     ? `已暂停 · 已遍历 ${folders} 目录 · 已发现 ${found} 个文件`
-                    : `扫描中 · 已遍历 ${folders} 目录 · 已发现 ${found} 个文件`;
+                    : `${this._modeRunningLabel(task)}中 · 已遍历 ${folders} 目录 · 已发现 ${found} 个文件`;
             }
             const pathEl = statusEl.querySelector('.src-status-path');
             if (pathEl && task?.current) pathEl.textContent = `当前：${task.current}`;
@@ -277,6 +309,18 @@ export class SourceManager {
             el('span', {}, label));
     }
 
+    /** 任务模式标签（完成态用）：全量 / 增量 / 续扫（断点恢复）。 */
+    _modeLabel(task) {
+        if (task?.resume) return '续扫';
+        return task?.mode === 'incremental' ? '增量' : '全量';
+    }
+
+    /** 任务模式描述（进行中用）：扫描 / 增量扫描 / 续扫。 */
+    _modeRunningLabel(task) {
+        if (task?.resume) return '续扫';
+        return task?.mode === 'incremental' ? '增量扫描' : '扫描';
+    }
+
     _statusArea(s, { task, scanning, probing, paused }) {
         if (probing) {
             return el('div', { class: 'src-status src-status-probe' },
@@ -295,7 +339,7 @@ export class SourceManager {
                 el('div', { class: 'src-status-text' },
                     paused
                         ? `已暂停 · 已遍历 ${folders} 目录 · 已发现 ${found} 个文件`
-                        : `扫描中 · 已遍历 ${folders} 目录 · 已发现 ${found} 个文件`),
+                        : `${this._modeRunningLabel(task)}中 · 已遍历 ${folders} 目录 · 已发现 ${found} 个文件`),
                 task?.current && !paused ? el('div', {
                     class: 'src-status-path', title: task.current,
                 }, `当前：${task.current}`) : null);
@@ -320,9 +364,13 @@ export class SourceManager {
             return barWrap;
         }
         if (task?.state === 'cancelled') {
-            return el('div', { class: 'src-status src-status-err' },
+            // 取消不再丢进度：现场存在 scan_stage/scan_state 里，可以继续
+            const saved = s.resumable
+                ? `进度已保存（已发现 ${task.found ?? 0} 个文件），可继续扫描`
+                : '本次结果未保存';
+            return el('div', { class: 'src-status src-status-warn' },
                 icon('stop', 14),
-                el('span', { class: 'src-status-text' }, '扫描已停止（本次结果未保存）'));
+                el('span', { class: 'src-status-text' }, `扫描已停止 · ${saved}`));
         }
         if (task?.state === 'failed' || s.last_error) {
             const msg = task?.state === 'failed'
@@ -337,10 +385,16 @@ export class SourceManager {
         }
         if (task?.state === 'done') {
             const failed = task.failed_dirs || 0;
+            const parts = [`共 ${task.total ?? 0} 个文件`];
+            if (task.added) parts.push(`新增 ${task.added}`);
+            if (task.updated) parts.push(`更新 ${task.updated}`);
+            if (task.unchanged) parts.push(`未变 ${task.unchanged}`);
+            if (task.removed) parts.push(`移除 ${task.removed}`);
             return el('div', { class: `src-status ${failed ? 'src-status-warn' : 'src-status-ok'}` },
                 icon(failed ? '!' : 'check', 14),
                 el('span', { class: 'src-status-text' },
-                    `扫描完成 · ${task.total ?? 0} 个文件 · ${((task.elapsed_ms ?? 0) / 1000).toFixed(1)}s`
+                    `扫描完成（${this._modeLabel(task)}） · ${parts.join(' · ')}`
+                    + ` · ${((task.elapsed_ms ?? 0) / 1000).toFixed(1)}s`
                     + (failed ? ` · ⚠ ${failed} 个目录失败被跳过（详见日志，建议重扫）` : '')));
         }
         return null;
@@ -413,17 +467,35 @@ export class SourceManager {
     _actionBar(s, { busy, scanning, probing, paused, task }) {
         const bar = el('div', { class: 'src-actions' });
 
+        // 主按钮三态：有断点→继续扫描；扫过→增量；没扫过→全量
+        const resumable = !!s.resumable && !busy;
+        const label = busy
+            ? (probing ? '检测中…' : '扫描中…')
+            : resumable ? '继续扫描'
+                : (s.last_scan_at ? '增量扫描' : '扫描');
         bar.append(el('button', {
             class: 'btn btn-sm btn-primary src-scan-btn',
             disabled: busy,
-            onclick: () => this.scan(s.id),
+            title: resumable ? '从上次中断的目录接着扫，已发现的不重来'
+                : s.last_scan_at ? '只写入有变化的内容（大小/修改时间变了才更新）'
+                    : '首次全量扫描',
+            onclick: () => (resumable ? this.resumeScan(s.id) : this.scan(s.id)),
         },
             busy
                 ? el('span', { class: 'btn-spinner' })
-                : icon('scan', 14),
-            busy ? (probing ? '检测中…' : '扫描中…') : '扫描'));
+                : icon(resumable ? 'play' : 'scan', 14),
+            label));
 
-        // 次要操作折叠进「更多」：编辑 / 测试连接 / 日志 / 删除
+        // 有断点时提供「放弃进度」——否则用户无法主动丢掉过期的现场
+        if (resumable) {
+            bar.append(el('button', {
+                class: 'btn btn-sm btn-ghost',
+                title: '放弃已保存的扫描进度',
+                onclick: () => this.discardScan(s.id),
+            }, icon('trash', 14), '放弃'));
+        }
+
+        // 次要操作折叠进「更多」：编辑 / 全量重扫 / 测试连接 / 日志 / 删除
         const moreWrap = el('div', { class: 'src-more' });
         const moreBtn = el('button', {
             class: 'btn btn-sm btn-icon btn-ghost',
@@ -439,6 +511,11 @@ export class SourceManager {
             },
         }, icon('more', 16));
         const moreMenu = el('div', { class: 'src-more-menu' },
+            el('button', {
+                class: 'src-more-item',
+                disabled: busy,
+                onclick: e => { e.stopPropagation(); closeMenu(); this.scan(s.id, 'full'); },
+            }, icon('refresh', 14), '全量重扫'),
             el('button', {
                 class: 'src-more-item',
                 onclick: e => { e.stopPropagation(); closeMenu(); this.probe(s); },
@@ -472,13 +549,15 @@ export class SourceManager {
      *   idle → probing → scanning → done | failed
      *          ↓(连通性失败)→ idle（不开扫，直接报错）
      * probe 结果缓存 60s，避免「全部扫描」时逐个重复握手。
+     *
+     * 模式：扫过的源默认走增量（只写变化项）；有断点的源用 resume
+     * 从上次的目录栈接着扫。都可以显式传 mode 覆盖。
      */
     _scanState = {};    // id -> 'idle' | 'probing' | 'scanning'
     _probeCache = {};   // id -> { ok, at, error }
 
-    async scan(id) {
-        const st = this._scanState[id] || 'idle';
-        if (st !== 'idle') return;               // 正在探测/扫描中，忽略重复点击
+    async _startScan(id, { resume = false, mode = 'auto' } = {}) {
+        if ((this._scanState[id] || 'idle') !== 'idle') return;   // 防重复点击
 
         // 1) 先确认连通性 —— 密码错/地址错在这里就暴露，不用等扫描失败
         this._scanState[id] = 'probing';
@@ -495,7 +574,23 @@ export class SourceManager {
         this._scanState[id] = 'scanning';
         this.render();
         try {
-            await api(`/api/sources/${id}/scan`, { method: 'POST' });
+            const body = { resume };
+            if (!resume) {
+                const src = this.sources.find(x => x.id === id);
+                body.mode = mode === 'auto'
+                    ? (src?.last_scan_at ? 'incremental' : 'full')
+                    : mode;
+            }
+            await api(`/api/sources/${id}/scan`, { method: 'POST', body });
+            // 立刻拉一次任务：否则到首次轮询（最长 1.5s）前，状态区还在用
+            // 上一个任务的残留进度（「已遍历 25 目录」跳完才归零，很违和）
+            try {
+                const d = await api('/api/tasks');
+                this.tasks = {};
+                for (const t of d.tasks || []) {
+                    if (!this.tasks[t.source_id]) this.tasks[t.source_id] = t;
+                }
+            } catch { /* 轮询会兜底 */ }
             this.startPolling();
             await this.load();
         } catch (e) {
@@ -503,6 +598,23 @@ export class SourceManager {
             showToast(e.message, 'err');
         }
         this.render();
+    }
+
+    /** 常规扫描（auto：扫过的走增量，没扫过的全量；可显式 'full'）。 */
+    scan(id, mode = 'auto') { return this._startScan(id, { mode }); }
+
+    /** 从断点继续扫描。 */
+    resumeScan(id) { return this._startScan(id, { resume: true }); }
+
+    /** 放弃已保存的扫描进度。 */
+    async discardScan(id) {
+        try {
+            await api(`/api/sources/${id}/scan-state`, { method: 'DELETE' });
+            showToast('已放弃保存的扫描进度', 'ok');
+        } catch (e) {
+            showToast(e.message, 'err');
+        }
+        await this.load();
     }
 
     async scanAll() {
@@ -519,7 +631,13 @@ export class SourceManager {
         }
         if (!toScan.length) { showToast('没有可扫描的数据源', 'warn'); return; }
         await Promise.allSettled(
-            toScan.map(id => api(`/api/sources/${id}/scan`, { method: 'POST' })));
+            toScan.map(id => {
+                const s = this.sources.find(x => x.id === id);
+                // 与后端 start_auto_scans 同策略：有断点→续扫；扫过→增量
+                const body = s?.resumable ? { resume: true }
+                    : { mode: s?.last_scan_at ? 'incremental' : 'full' };
+                return api(`/api/sources/${id}/scan`, { method: 'POST', body });
+            }));
         toScan.forEach(id => this._scanState[id] = 'scanning');
         this.startPolling();
         await this.load();
