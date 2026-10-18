@@ -32,6 +32,11 @@ MIME = {
 IGNORE_RANGE = False
 REQUIRE_AUTH: tuple[str, str] | None = None
 
+# 测试「目录列举失败」场景：这些目录（规范化、含结尾斜杠）的 PROPFIND
+# 返回 500，模拟网盘大目录超时报错 —— 验证失败目录被上报、可重扫、不静默丢弃。
+# 也可通过环境变量 WEBSUA_BROKEN_DIRS（逗号分隔的路径）在启动时注入，便于浏览器测试。
+BROKEN_DIRS: set[str] = set()
+
 
 def build_fixture():
     """构造一棵虚拟目录树，含中文名、空格、嵌套目录。
@@ -154,6 +159,13 @@ class Handler(BaseHTTPRequestHandler):
         # 挂载点 /dav 只是服务器前缀，虚拟文件表用的是不含它的路径
         if path.startswith("/dav"):
             path = path[4:] or "/"
+        # 故意让某些目录列举失败（返回 500）—— 用于失败目录重扫测试
+        norm_check = path if path.endswith("/") else path + "/"
+        if norm_check in BROKEN_DIRS:
+            self.send_response(500)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         depth = self.headers.get("Depth", "1")
         length = int(self.headers.get("Content-Length") or 0)
         if length:
@@ -291,6 +303,18 @@ def serve(port, auth=None, ignore_range=False):
     return srv
 
 
+def _apply_broken_env() -> None:
+    """从 WEBSUA_BROKEN_DIRS 注入坏目录（逗号分隔），便于浏览器测试启动即带故障。"""
+    raw = os.environ.get("WEBSUA_BROKEN_DIRS", "")
+    for part in raw.split(","):
+        p = part.strip()
+        if p:
+            # 规范化：确保以 / 开头、以 / 结尾，与 do_PROPFIND 的判定一致
+            if not p.startswith("/"):
+                p = "/" + p
+            BROKEN_DIRS.add(p if p.endswith("/") else p + "/")
+
+
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8899
     mode = sys.argv[2] if len(sys.argv) > 2 else "good"
@@ -301,6 +325,7 @@ if __name__ == "__main__":
     REQUIRE_AUTH = auth
     IGNORE_RANGE = ignore
     build_fixture()
+    _apply_broken_env()
     srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     srv.daemon_threads = True
     print(f"假 WebDAV 运行于 http://127.0.0.1:{port}/dav  模式={mode}"

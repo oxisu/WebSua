@@ -137,6 +137,9 @@ def main() -> int:
     results.append(("增量扫描与断点续扫", run(
         "未变项跳过（indexed_at 不刷新）/ mtime+size 签名 / 断点续扫 / 取消保留进度",
         [PY, "tests/test_incremental.py"])))
+    results.append(("失败目录重扫 + 差异报告", run(
+        "失败目录持久化可观测 / mode=failed 只重扫失败目录 / 差异报告记录消失路径",
+        [PY, "tests/test_failed_dirs.py"])))
 
     # 认证场景需要把假服务器切到 auth 模式
     print("\n  切换假服务器到认证模式…")
