@@ -63,7 +63,7 @@ python main.py --scan             # 启动后立即扫描所有数据源
 | 恢复上次播放 | 开 | 打开时恢复上次的播放源、顺序与当前进度 |
 | 自动播放 | 开 | 滚动到某条自动播放 |
 | 播放器调试日志 | 关 | 在播放器「更多」菜单里开关 |
-| 视频流每页条数 | 24 | 决定视频流与「接下来」队列每页加载条数 |
+| 视频流每页条数 | 24 | 视频流滚动到底时每次加载的条数 |
 | 媒体库每页条数 | 48 | 媒体库网格滚动到底每次加载条数 |
 
 ### 历史播放
@@ -104,6 +104,24 @@ video.mp4 + video.mp4.jpg         ← 原名 + .jpg（其他工具）
 - 有字幕时默认显示；无字幕时不出现按钮，`/api/subtitle/{id}` 返回 404
 - **不支持 `.ass` / `.ssa`**：样式与定位解析成本高，暂不实现；这类文件会被忽略，不会入索引
 - 字幕关联每次扫描时刷新
+
+### 播放队列 / 下一集
+
+右侧「播放队列」面板把「连播」从想法变成显式队列：
+
+- **按目录自然序生成**：播放任意视频时，自动把它所在目录的视频按**自然序**排成队列
+  （`第1集、第2集…第10集、第11集` —— 字典序会把 10 排到 2 前面，追剧直接乱套），
+  从当前这一集开始。随机视频流负责「发现」，队列负责「连续」
+- **拖拽排序**：按住行首把手拖动即可调整顺序；当前播放项不因拖拽而改变
+- **循环三态**：关（播完停止）/ 整表循环 / 单集重播，循环按钮循环切换
+- **随机播放**：只打乱**播放顺序**（当前项永远置顶），可见列表仍是目录序
+- **持久化**：队列存在服务端（只存 id，读取时解析成当前存在的媒体，
+  文件被删 / 源被停用自动剔除），刷新、重启、换浏览器都能接着连播
+- **清空即关闭**：清空队列会同时关闭自动生成，避免下一跳又建回来；
+  在空状态里可以「按当前视频开启」
+- 上一条 / 下一条导航、键盘 ↑↓/k/p、自动连播、坏条目跳过，全部沿队列走
+- 队列导航会把视频流切成该目录的自然序列表 —— **随机序不可复现**
+  （SQLite `RANDOM()` 每次结果不同），拿它当连播锚点会跳错片
 
 ### 目录排除
 
@@ -159,8 +177,9 @@ WebSua/
 │   │   ├── player.css      # 播放器 cvp-* 类
 │   │   └── app.css         # 布局、三断点、组件
 │   └── js/
-│       ├── app.js          # 入口：路由、侧栏、队列、设置弹窗
-│       ├── feed.js         # 竖屏视频流（窗口化挂载 + IntersectionObserver）
+│       ├── app.js          # 入口：路由、侧栏、队列面板、设置弹窗
+│       ├── feed.js         # 竖屏视频流（窗口化挂载 + IntersectionObserver + 队列导航）
+│       ├── queue.js        # 播放队列：目录自然序生成 / 拖拽 / 循环 / 随机 / 持久化
 │       ├── grid.js         # 媒体网格（分页 + 缩略图）
 │       ├── sources.js      # 数据源管理（状态机 + 细粒度 DOM 更新）
 │       ├── video-player.js # 播放器（看门狗 + 端点回退 + 更多菜单）
@@ -169,13 +188,16 @@ WebSua/
 │       ├── settings.js     # 前端设置（localStorage + 订阅）
 │       └── utils.js        # 请求、格式化、Toast、主题
 ├── tests/
-│   ├── fake_dav.py         # 假 WebDAV（good/auth/norange 三模式，含 24 个批量目录）
+│   ├── fake_dav.py         # 假 WebDAV（good/auth/norange 三模式，含 24 个批量目录 + 12 集番剧目录）
 │   ├── run_all.py          # 一键回归：自动起服务、切模式、清端口、跑完清理
 │   ├── test_e2e.py         # 端到端 36 项
 │   ├── test_norange.py     # 服务器忽略 Range 时的本地裁剪 17 项
 │   ├── test_edge.py        # 认证/远端删除/密码不外泄 14 项
+│   ├── test_subtitles.py   # 字幕关联与读取
+│   ├── test_queue.py       # 播放队列：自然序 + 持久化接口 23 项
 │   ├── test_browser.js     # 浏览器 60 项（三断点 × 明暗 × 布局）
 │   ├── test_new_features.js# 新功能 8 项
+│   ├── test_queue_ui.js    # 播放队列端到端 24 项（自然序/拖拽/循环/清空/下一集）
 │   ├── test_ui_polish.js   # UI 打磨 19 项（暂停继续/菜单/折叠/Toast）
 │   ├── audit_ui.js         # 全页面截图审查（3 断点 × 12 场景）
 │   ├── gen_media.js        # 用 MediaRecorder 生成真 webm 素材
@@ -199,11 +221,12 @@ WebSua/
 | POST | `/api/sources/{id}/scan/pause·resume·cancel` | 扫描控制 |
 | GET | `/api/tasks`、`/api/tasks/{id}` | 任务列表（每源只留最新）/ 详情含日志 |
 | GET | `/api/scan-log` | scan.log 尾部内容 |
-| GET | `/api/media` | 分页列表（sources/kinds/folder/q/order/fav/limit/offset） |
+| GET | `/api/media` | 分页列表（sources/kinds/folder/q/order/fav/limit/offset；`order=natural` 为自然序） |
 | GET | `/api/history` | 观看历史（有进度的媒体，按最近观看时间倒序，支持 sources/limit/offset） |
 | GET | `/api/media/{id}` | 详情（播放器信息面板） |
 | POST | `/api/media/{id}/fav` | 切换收藏 |
-| GET/POST/DELETE | `/api/progress`、`/api/progress-batch` | 观看进度（批量供 sendBeacon） |
+| GET/POST/DELETE | `/api/queue` | 播放队列持久化（只存 id，读取时解析并剔除失效条目） |
+| GET/POST | `/api/progress`、`/api/progress-batch` | 观看进度（批量供 sendBeacon） |
 | GET | `/api/stream/{id}` | 媒体流（Range，`?dl=1` 下载） |
 | GET | `/api/proxy/{id}` | 备用端点（无 Range 全量） |
 | GET | `/api/poster/{id}` | TG 同名封面（无则 404） |
@@ -514,6 +537,10 @@ def kill_port(port):
 - **`random` 顺序不可复现** —— SQLite `RANDOM()` 每次请求都重新洗牌，上次的 mediaId 在恢复时根本定位不到。恢复会话时把 random 转成「最近」确定性排序，才能精确定位。「恢复」的语义是继续上次播放，而非复现当时的随机队列。
 
 **7. 「以业务实体为 key 的字典」和「随机序」都要问一句可复现性。** 会话/分页/队列这类「要能还原状态」的功能，底层数据源必须是确定性的；随机是体验糖，不能作为持久化锚点。
+
+**8. 绝对定位元素挂在滚动容器内部，会跟着内容一起滚走。** 视频流的「上一条/下一条」按钮是 `.feed`（可滚动容器）的 `position: absolute; top: 50%` 子元素 —— 百分比相对的是**整个滚动内容的高度**，滚到第 8 条时按钮跑到视口上方三千多像素，用户根本点不到。修法：`top: 0` + 在 scroll 回调里用 `transform: translateY(scrollTop + 半屏高 - 半键高)` 反向抵消。这个 bug 是自动化测试点导航按钮时暴露的——Playwright 为了把按钮滚进视口，把视频流瞬间滚回顶部，把队列索引也带偏了。**浮层控件要么放在滚动容器外，要么用 transform 钉在视口上。**
+
+**9. 自然序要显式做，字典序会毁掉「下一集」。** SQLite 的 `ORDER BY name` 是字典序：`第10集` 排在 `第2集` 前面。播放队列这类「按名字连续」的场景必须在取回后用 `re.split(r'(\d+)')` 做自然序键（数字段转 int 比较），并且**先排完再分页**——在 SQL 里 limit 会把排序结果截错。
 
 ---
 
