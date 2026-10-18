@@ -1,0 +1,464 @@
+"""SQLite 数据层：数据源、媒体文件、观看进度、收藏。
+
+纯标准库实现 —— 单连接 + 可重入锁，保证多线程 HTTP 服务器下的安全。
+"""
+from __future__ import annotations
+
+import json
+import sqlite3
+import threading
+import time
+from typing import Any, Iterable
+
+from .config import DB_PATH
+
+_lock = threading.RLock()
+_conn: sqlite3.Connection | None = None
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS sources (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    name          TEXT NOT NULL,
+    base_url      TEXT NOT NULL,
+    username      TEXT,
+    password      TEXT,
+    root_path     TEXT DEFAULT '/',
+    kind          TEXT DEFAULT 'video',
+    icon          TEXT DEFAULT '',
+    color         TEXT DEFAULT '',
+    sort          INTEGER DEFAULT 0,
+    enabled       INTEGER DEFAULT 1,
+    auto_scan     INTEGER DEFAULT 0,
+    verify_ssl    INTEGER DEFAULT 1,
+    tg_mode       INTEGER DEFAULT 0,
+    exclude_dirs  TEXT DEFAULT '',
+    last_scan_at  INTEGER,
+    last_scan_ms  INTEGER,
+    last_error    TEXT,
+    item_count    INTEGER DEFAULT 0,
+    created_at    INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS media (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_id     INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+    remote_path   TEXT NOT NULL,
+    name          TEXT NOT NULL,
+    ext           TEXT,
+    kind          TEXT NOT NULL DEFAULT 'video',
+    mime          TEXT,
+    size          INTEGER DEFAULT 0,
+    mtime         INTEGER,
+    duration      REAL,
+    width         INTEGER,
+    height        INTEGER,
+    folder        TEXT DEFAULT '',
+    poster_path   TEXT DEFAULT '',
+    content_hash  TEXT,
+    indexed_at    INTEGER NOT NULL,
+    UNIQUE(source_id, remote_path)
+);
+
+CREATE INDEX IF NOT EXISTS idx_media_source ON media(source_id);
+CREATE INDEX IF NOT EXISTS idx_media_kind   ON media(source_id, kind);
+CREATE INDEX IF NOT EXISTS idx_media_size   ON media(source_id, size DESC);
+CREATE INDEX IF NOT EXISTS idx_media_folder ON media(source_id, folder);
+
+CREATE TABLE IF NOT EXISTS progress (
+    media_id      INTEGER PRIMARY KEY REFERENCES media(id) ON DELETE CASCADE,
+    position      REAL DEFAULT 0,
+    duration      REAL DEFAULT 0,
+    watched_at    INTEGER NOT NULL,
+    finished      INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS favorites (
+    media_id      INTEGER PRIMARY KEY REFERENCES media(id) ON DELETE CASCADE,
+    created_at    INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS meta (
+    key           TEXT PRIMARY KEY,
+    value         TEXT
+);
+"""
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """增量迁移：老库补新列。幂等，用 PRAGMA table_info 判断。"""
+    def cols(table: str) -> set[str]:
+        return {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+
+    if "poster_path" not in cols("media"):
+        conn.execute("ALTER TABLE media ADD COLUMN poster_path TEXT DEFAULT ''")
+    if "tg_mode" not in cols("sources"):
+        conn.execute("ALTER TABLE sources ADD COLUMN tg_mode INTEGER DEFAULT 0")
+    if "exclude_dirs" not in cols("sources"):
+        conn.execute("ALTER TABLE sources ADD COLUMN exclude_dirs TEXT DEFAULT ''")
+
+
+def get_conn() -> sqlite3.Connection:
+    global _conn
+    if _conn is None:
+        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _conn = sqlite3.connect(DB_PATH, timeout=30, check_same_thread=False)
+        _conn.row_factory = sqlite3.Row
+        _conn.execute("PRAGMA journal_mode=WAL")
+        _conn.execute("PRAGMA synchronous=NORMAL")
+        _conn.execute("PRAGMA foreign_keys=ON")
+        _conn.executescript(SCHEMA)
+        _migrate(_conn)
+        _conn.commit()
+    return _conn
+
+
+def rows_to_dicts(rows: Iterable[sqlite3.Row]) -> list[dict[str, Any]]:
+    return [dict(r) for r in rows]
+
+
+# ---------------- sources ----------------
+
+def list_sources(only_enabled: bool = False) -> list[dict[str, Any]]:
+    sql = "SELECT * FROM sources"
+    if only_enabled:
+        sql += " WHERE enabled = 1"
+    sql += " ORDER BY sort ASC, id ASC"
+    with _lock:
+        return rows_to_dicts(get_conn().execute(sql).fetchall())
+
+
+def get_source(source_id: int) -> dict[str, Any] | None:
+    with _lock:
+        row = get_conn().execute("SELECT * FROM sources WHERE id = ?", (source_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def create_source(data: dict[str, Any]) -> int:
+    now = int(time.time())
+    with _lock:
+        cur = get_conn().execute(
+            """INSERT INTO sources
+               (name, base_url, username, password, root_path, kind, icon, color,
+                sort, enabled, auto_scan, verify_ssl, tg_mode, exclude_dirs, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+             (data["name"], data["base_url"].rstrip("/"),
+              data.get("username") or "", data.get("password") or "",
+              data.get("root_path") or "/", data.get("kind") or "video",
+              data.get("icon") or "", data.get("color") or "",
+              int(data.get("sort", 0)), 1 if data.get("enabled", True) else 0,
+              1 if data.get("auto_scan") else 0,
+              1 if data.get("verify_ssl", True) else 0,
+              1 if data.get("tg_mode") else 0,
+              data.get("exclude_dirs") or "", now),
+        )
+        get_conn().commit()
+    return int(cur.lastrowid)
+
+
+_INT_FIELDS = {"sort", "enabled", "auto_scan", "verify_ssl", "tg_mode",
+               "last_scan_at", "last_scan_ms", "item_count"}
+
+
+def update_source(source_id: int, data: dict[str, Any]) -> bool:
+    allowed = {
+        "name", "base_url", "username", "password", "root_path", "kind",
+        "icon", "color", "sort", "enabled", "auto_scan", "verify_ssl", "tg_mode",
+        "exclude_dirs",
+        "last_scan_at", "last_scan_ms", "last_error", "item_count",
+    }
+    sets, vals = [], []
+    for k, v in data.items():
+        if k in allowed:
+            sets.append(f"{k} = ?")
+            vals.append(int(v) if k in _INT_FIELDS else v)
+    if not sets:
+        return False
+    vals.append(source_id)
+    with _lock:
+        cur = get_conn().execute(f"UPDATE sources SET {', '.join(sets)} WHERE id = ?", vals)
+        get_conn().commit()
+    return cur.rowcount > 0
+
+
+def delete_source(source_id: int) -> bool:
+    with _lock:
+        conn = get_conn()
+        conn.execute("DELETE FROM media WHERE source_id = ?", (source_id,))
+        cur = conn.execute("DELETE FROM sources WHERE id = ?", (source_id,))
+        conn.commit()
+    return cur.rowcount > 0
+
+
+# ---------------- media ----------------
+
+def bulk_upsert_media(source_id: int, items: list[dict[str, Any]]) -> tuple[int, int, int]:
+    """写入/更新媒体条目。返回 (新增数, 总数, 清理数)。
+
+    注意：远端 PROPFIND 可能返回重复条目（123 云盘等网盘出现过），
+    items 内同 remote_path 出现两次时，若不做防重，第二次 INSERT 会
+    撞 UNIQUE(source_id, remote_path) 让整个扫描中途失败。
+    """
+    now = int(time.time())
+    with _lock:
+        conn = get_conn()
+        existing = {
+            r["remote_path"]: r["id"]
+            for r in conn.execute("SELECT id, remote_path FROM media WHERE source_id = ?", (source_id,))
+        }
+        seen: set[str] = set()
+        added = 0
+        for it in items:
+            rp = it["remote_path"]
+            if rp in seen:
+                continue   # 本轮已处理过（远端重复条目），跳过防 UNIQUE 崩溃
+            seen.add(rp)
+            if rp in existing:
+                conn.execute(
+                    """UPDATE media SET name=?, ext=?, kind=?, mime=?, size=?, mtime=?,
+                       folder=?, poster_path=?, indexed_at=? WHERE id=?""",
+                    (it["name"], it.get("ext"), it.get("kind", "video"), it.get("mime"),
+                     int(it.get("size") or 0), it.get("mtime"),
+                     it.get("folder", ""), it.get("poster_path", ""), now, existing[rp]),
+                )
+            else:
+                conn.execute(
+                    """INSERT INTO media
+                       (source_id, remote_path, name, ext, kind, mime, size, mtime,
+                        folder, poster_path, duration, width, height, indexed_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (source_id, rp, it["name"], it.get("ext"), it.get("kind", "video"),
+                     it.get("mime"), int(it.get("size") or 0), it.get("mtime"),
+                     it.get("folder", ""), it.get("poster_path", ""),
+                     it.get("duration"), it.get("width"),
+                     it.get("height"), now),
+                )
+                added += 1
+        gone = [pid for rp, pid in existing.items() if rp not in seen]
+        for i in range(0, len(gone), 400):
+            chunk = gone[i:i + 400]
+            conn.execute(f"DELETE FROM media WHERE id IN ({','.join('?' * len(chunk))})", chunk)
+        conn.commit()
+    return added, len(seen), len(gone)
+
+
+def get_media(media_id: int) -> dict[str, Any] | None:
+    with _lock:
+        row = get_conn().execute(
+            """SELECT m.*, s.name AS source_name, s.base_url, s.username, s.password,
+                      s.root_path AS source_root, s.id AS sid, s.color AS source_color,
+                      s.verify_ssl
+               FROM media m JOIN sources s ON s.id = m.source_id
+               WHERE m.id = ?""", (media_id,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def query_media(
+    source_ids: list[int] | None = None,
+    kinds: list[str] | None = None,
+    folder: str | None = None,
+    search: str | None = None,
+    order: str = "new",
+    limit: int = 60,
+    offset: int = 0,
+    favorite_only: bool = False,
+) -> tuple[list[dict[str, Any]], int]:
+    where, params = ["s.enabled = 1"], []
+    if source_ids:
+        where.append(f"m.source_id IN ({','.join('?' * len(source_ids))})")
+        params += list(source_ids)
+    if kinds:
+        where.append(f"m.kind IN ({','.join('?' * len(kinds))})")
+        params += list(kinds)
+    if folder:
+        where.append("m.folder = ?")
+        params.append(folder)
+    if search:
+        where.append("m.name LIKE ?")
+        params.append(f"%{search}%")
+    if favorite_only:
+        where.append("m.id IN (SELECT media_id FROM favorites)")
+    clause = " WHERE " + " AND ".join(where)
+    orders = {
+        "new": "m.indexed_at DESC, m.id DESC",
+        "old": "m.indexed_at ASC, m.id ASC",
+        "name": "m.name ASC",
+        "big": "m.size DESC",
+        "small": "m.size ASC",
+        "random": "RANDOM()",
+    }
+    with _lock:
+        conn = get_conn()
+        total = conn.execute(
+            f"SELECT COUNT(*) c FROM media m JOIN sources s ON s.id = m.source_id{clause}",
+            params).fetchone()["c"]
+        rows = conn.execute(
+            f"""SELECT m.*, s.name AS source_name, s.color AS source_color,
+                       p.position AS position, p.finished AS finished,
+                       (f.media_id IS NOT NULL) AS is_fav
+                FROM media m
+                JOIN sources s ON s.id = m.source_id
+                LEFT JOIN progress p ON p.media_id = m.id
+                LEFT JOIN favorites f ON f.media_id = m.id
+                {clause}
+                ORDER BY {orders.get(order, orders['new'])}
+                LIMIT ? OFFSET ?""",
+            params + [limit, offset],
+        ).fetchall()
+    return rows_to_dicts(rows), total
+
+
+def list_folders(source_id: int) -> list[dict[str, Any]]:
+    with _lock:
+        rows = get_conn().execute(
+            """SELECT folder, COUNT(*) c, COALESCE(SUM(size),0) total
+               FROM media WHERE source_id = ? AND folder != ''
+               GROUP BY folder ORDER BY folder""", (source_id,)
+        ).fetchall()
+    return rows_to_dicts(rows)
+
+
+def media_counts_by_source() -> list[dict[str, Any]]:
+    with _lock:
+        rows = get_conn().execute(
+            """SELECT m.source_id, m.kind, COUNT(*) c, COALESCE(SUM(m.size),0) total
+               FROM media m JOIN sources s ON s.id = m.source_id
+               WHERE s.enabled = 1
+               GROUP BY m.source_id, m.kind"""
+        ).fetchall()
+    return rows_to_dicts(rows)
+
+
+def query_history(limit: int = 60, offset: int = 0,
+                  source_ids: list[int] | None = None) -> tuple[list[dict[str, Any]], int]:
+    """观看历史：有进度的媒体，按最近观看时间降序。"""
+    where, params = ["p.position > 1"], []
+    if source_ids:
+        where.append(f"m.source_id IN ({','.join('?' * len(source_ids))})")
+        params += list(source_ids)
+    clause = " WHERE " + " AND ".join(where)
+    with _lock:
+        conn = get_conn()
+        total = conn.execute(
+            f"""SELECT COUNT(*) c FROM progress p JOIN media m ON m.id = p.media_id{clause}""",
+            params).fetchone()["c"]
+        rows = conn.execute(
+            f"""SELECT m.*, s.name AS source_name, s.color AS source_color,
+                       p.position AS position, p.duration AS p_duration,
+                       p.watched_at AS watched_at, p.finished AS finished,
+                       (f.media_id IS NOT NULL) AS is_fav
+                FROM progress p
+                JOIN media m ON m.id = p.media_id
+                JOIN sources s ON s.id = m.source_id
+                LEFT JOIN favorites f ON f.media_id = m.id
+                {clause}
+                ORDER BY p.watched_at DESC
+                LIMIT ? OFFSET ?""",
+            params + [limit, offset]).fetchall()
+    return rows_to_dicts(rows), total
+
+
+# ---------------- progress / favorites ----------------
+
+def get_progress(media_id: int) -> dict[str, Any] | None:
+    with _lock:
+        row = get_conn().execute("SELECT * FROM progress WHERE media_id = ?", (media_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def all_progress(min_position: float = 1.0) -> dict[int, float]:
+    with _lock:
+        rows = get_conn().execute(
+            "SELECT media_id, position FROM progress WHERE position > ?", (min_position,)
+        ).fetchall()
+    return {r["media_id"]: r["position"] for r in rows}
+
+
+def save_progress(media_id: int, position: float, duration: float = 0.0) -> None:
+    finished = 1 if duration > 0 and position >= duration - 10 else 0
+    with _lock:
+        get_conn().execute(
+            """INSERT INTO progress (media_id, position, duration, watched_at, finished)
+               VALUES (?,?,?,?,?)
+               ON CONFLICT(media_id) DO UPDATE SET
+                 position=excluded.position, duration=excluded.duration,
+                 watched_at=excluded.watched_at, finished=excluded.finished""",
+            (media_id, float(position), float(duration), int(time.time()), finished),
+        )
+        get_conn().commit()
+
+
+def clear_progress(media_id: int) -> None:
+    with _lock:
+        get_conn().execute("DELETE FROM progress WHERE media_id = ?", (media_id,))
+        get_conn().commit()
+
+
+def clear_all_progress() -> int:
+    with _lock:
+        cur = get_conn().execute("DELETE FROM progress")
+        get_conn().commit()
+    return cur.rowcount
+
+
+def toggle_favorite(media_id: int) -> bool:
+    with _lock:
+        conn = get_conn()
+        row = conn.execute("SELECT 1 FROM favorites WHERE media_id = ?", (media_id,)).fetchone()
+        if row:
+            conn.execute("DELETE FROM favorites WHERE media_id = ?", (media_id,))
+            fav = False
+        else:
+            conn.execute("INSERT INTO favorites (media_id, created_at) VALUES (?,?)",
+                         (media_id, int(time.time())))
+            fav = True
+        conn.commit()
+    return fav
+
+
+def is_favorite(media_id: int) -> bool:
+    with _lock:
+        return get_conn().execute(
+            "SELECT 1 FROM favorites WHERE media_id = ?", (media_id,)
+        ).fetchone() is not None
+
+
+# ---------------- settings ----------------
+
+def get_setting(key: str, default: Any = None) -> Any:
+    with _lock:
+        row = get_conn().execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+    if not row:
+        return default
+    try:
+        return json.loads(row["value"])
+    except (json.JSONDecodeError, TypeError):
+        return row["value"]
+
+
+def set_setting(key: str, value: Any) -> None:
+    with _lock:
+        get_conn().execute(
+            "INSERT INTO meta (key, value) VALUES (?,?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, json.dumps(value, ensure_ascii=False)),
+        )
+        get_conn().commit()
+
+
+def stats() -> dict[str, Any]:
+    with _lock:
+        conn = get_conn()
+        one = lambda q: conn.execute(q).fetchone()[0]
+        # 媒体统计只计启用源 —— 停用源的内容不应出现在任何视图
+        return {
+            "sources": one("SELECT COUNT(*) FROM sources"),
+            "sources_enabled": one("SELECT COUNT(*) FROM sources WHERE enabled=1"),
+            "media": one("SELECT COUNT(*) FROM media m JOIN sources s ON s.id=m.source_id WHERE s.enabled=1"),
+            "videos": one("SELECT COUNT(*) FROM media m JOIN sources s ON s.id=m.source_id WHERE s.enabled=1 AND m.kind='video'"),
+            "images": one("SELECT COUNT(*) FROM media m JOIN sources s ON s.id=m.source_id WHERE s.enabled=1 AND m.kind='image'"),
+            "audio": one("SELECT COUNT(*) FROM media m JOIN sources s ON s.id=m.source_id WHERE s.enabled=1 AND m.kind='audio'"),
+            "total_size": one("SELECT COALESCE(SUM(m.size),0) FROM media m JOIN sources s ON s.id=m.source_id WHERE s.enabled=1"),
+            "favorites": one("SELECT COUNT(*) FROM favorites"),
+            "watched": one("SELECT COUNT(*) FROM progress WHERE position > 5"),
+        }
