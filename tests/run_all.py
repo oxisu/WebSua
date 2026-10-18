@@ -140,6 +140,9 @@ def main() -> int:
     results.append(("失败目录重扫 + 差异报告", run(
         "失败目录持久化可观测 / mode=failed 只重扫失败目录 / 差异报告记录消失路径",
         [PY, "tests/test_failed_dirs.py"])))
+    results.append(("局域网访问密码 / 令牌", run(
+        "门禁拦截 API 与媒体流 / Cookie·Bearer·token 三种凭据 / 限流 / 非本机绑定强制设密码",
+        [PY, "tests/test_access.py"])))
 
     # 认证场景需要把假服务器切到 auth 模式
     print("\n  切换假服务器到认证模式…")
