@@ -1,0 +1,689 @@
+/* ============================================================
+   播放器样式 —— 对应 video-player.js 的 cvp-* 类契约
+   ============================================================ */
+
+.cvp-wrapper {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  background: #000;
+  overflow: hidden;
+  border-radius: inherit;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: manipulation;
+}
+
+.cvp-video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+  display: block;
+}
+
+/* ---- 旋转 ---- */
+.cvp-rotate-90 .cvp-video,
+.cvp-rotate-270 .cvp-video {
+  transform-origin: center center;
+}
+.cvp-rotate-180 .cvp-video {
+  transform: rotate(180deg);
+}
+
+/* ---- 控制层 ---- */
+.cvp-controls {
+  position: absolute;
+  inset: 0;
+  opacity: 1;
+  transition: opacity var(--dur) var(--ease);
+  pointer-events: auto;
+}
+
+.cvp-controls-top {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--sp-1);
+  padding: var(--sp-3);
+  background: linear-gradient(to bottom, rgba(0, 0, 0, 0.55), transparent);
+}
+
+.cvp-controls-center {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-5);
+  transform: translateY(-50%);
+}
+
+.cvp-controls-bottom {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: var(--sp-5) var(--sp-3) var(--sp-3);
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.75), transparent);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.cvp-bottom-right {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+  flex-wrap: nowrap;
+}
+
+/* ---- 按钮 ---- */
+.cvp-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 34px;
+  height: 34px;
+  padding: 0 var(--sp-2);
+  border-radius: var(--r-sm);
+  color: #fff;
+  background: rgba(255, 255, 255, 0.1);
+  transition: background var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+  position: relative;
+}
+.cvp-btn:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+.cvp-btn:active {
+  transform: scale(0.92);
+}
+
+.cvp-play-btn {
+  min-width: 68px;
+  height: 68px;
+  border-radius: var(--r-full);
+  background: rgba(255, 255, 255, 0.14);
+  backdrop-filter: blur(8px);
+}
+.cvp-play-btn:hover {
+  background: rgba(255, 255, 255, 0.26);
+}
+.cvp-replay-btn {
+  min-width: 68px;
+  height: 68px;
+  border-radius: var(--r-full);
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.cvp-seek-back,
+.cvp-seek-forward {
+  background: transparent;
+  opacity: 0.9;
+}
+.cvp-seek-back:hover,
+.cvp-seek-forward:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+/* 悬浮提示 */
+.cvp-btn-tooltip-down::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%) translateY(-4px);
+  padding: 4px 8px;
+  font-size: 11px;
+  line-height: 1.3;
+  white-space: nowrap;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.82);
+  border-radius: var(--r-sm);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+}
+.cvp-btn-tooltip-down:hover::after {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+/* ---- 进度条 ---- */
+.cvp-time {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: rgba(255, 255, 255, 0.9);
+  font-family: var(--font-mono);
+}
+
+.cvp-progress {
+  position: relative;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  touch-action: none;
+}
+.cvp-progress::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 3px;
+  border-radius: var(--r-full);
+  background: rgba(255, 255, 255, 0.24);
+  transition: height var(--dur-fast) var(--ease);
+}
+.cvp-progress:hover::before {
+  height: 5px;
+}
+
+.cvp-progress-buffered,
+.cvp-progress-played {
+  position: absolute;
+  left: 0;
+  height: 3px;
+  border-radius: var(--r-full);
+  pointer-events: none;
+  transition: height var(--dur-fast) var(--ease);
+}
+.cvp-progress:hover .cvp-progress-buffered,
+.cvp-progress:hover .cvp-progress-played {
+  height: 5px;
+}
+.cvp-progress-buffered {
+  background: rgba(255, 255, 255, 0.4);
+}
+.cvp-progress-played {
+  background: var(--brand-grad);
+}
+
+.cvp-progress-thumb {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  border-radius: var(--r-full);
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+  transform: translateX(-50%) scale(0);
+  transition: transform var(--dur-fast) var(--ease);
+  pointer-events: none;
+}
+.cvp-progress:hover .cvp-progress-thumb {
+  transform: translateX(-50%) scale(1);
+}
+
+.cvp-progress-tooltip {
+  position: absolute;
+  bottom: 20px;
+  transform: translateX(-50%);
+  padding: 3px 7px;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: #fff;
+  background: rgba(0, 0, 0, 0.85);
+  border-radius: var(--r-sm);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur-fast) var(--ease);
+  white-space: nowrap;
+}
+
+/* ---- 速度 / 音量 ---- */
+.cvp-speed-group,
+.cvp-volume-group,
+.cvp-rotate-group,
+.cvp-more-group {
+  position: relative;
+}
+
+.cvp-speed-btn {
+  min-width: 42px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.cvp-speed-menu,
+.cvp-rotate-menu,
+.cvp-more-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  right: 0;
+  min-width: 128px;
+  padding: var(--sp-1);
+  border-radius: var(--r-md);
+  background: rgba(18, 20, 26, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: var(--shadow-3);
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(6px) scale(0.97);
+  transition: all var(--dur-fast) var(--ease);
+  z-index: 20;
+  backdrop-filter: blur(12px);
+}
+.cvp-speed-show,
+.cvp-rotate-show,
+.cvp-more-show {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0) scale(1);
+}
+
+.cvp-speed-option,
+.cvp-rotate-option,
+.cvp-more-option {
+  display: block;
+  width: 100%;
+  padding: 7px 10px;
+  font-size: 13px;
+  text-align: left;
+  color: rgba(255, 255, 255, 0.82);
+  border-radius: var(--r-sm);
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.cvp-speed-option:hover,
+.cvp-rotate-option:hover,
+.cvp-more-option:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+}
+.cvp-speed-active,
+.cvp-more-active {
+  color: var(--brand-1);
+  font-weight: 600;
+}
+
+.cvp-volume-slider {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%) translateY(6px);
+  width: 92px;
+  height: 34px;
+  padding: 0 8px;
+  display: flex;
+  align-items: center;
+  border-radius: var(--r-md);
+  background: rgba(18, 20, 26, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: var(--shadow-2);
+  opacity: 0;
+  visibility: hidden;
+  transition: all var(--dur-fast) var(--ease);
+  cursor: pointer;
+  touch-action: none;
+}
+.cvp-volume-group:hover .cvp-volume-slider,
+.cvp-volume-slider:hover {
+  opacity: 1;
+  visibility: visible;
+  transform: translateX(-50%) translateY(0);
+}
+.cvp-volume-track {
+  width: 100%;
+  height: 4px;
+  border-radius: var(--r-full);
+  background: rgba(255, 255, 255, 0.24);
+  overflow: hidden;
+}
+.cvp-volume-fill {
+  height: 100%;
+  border-radius: var(--r-full);
+  background: var(--brand-grad);
+  width: 100%;
+}
+
+/* ---- 面板（信息 / 帮助）---- */
+.cvp-info-panel,
+.cvp-help-panel {
+  position: absolute;
+  bottom: 58px;
+  right: var(--sp-3);
+  width: min(320px, calc(100% - 24px));
+  max-height: 60%;
+  overflow-y: auto;
+  padding: var(--sp-3);
+  border-radius: var(--r-md);
+  background: rgba(18, 20, 26, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: var(--shadow-3);
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(8px) scale(0.98);
+  transition: all var(--dur) var(--ease);
+  z-index: 25;
+  backdrop-filter: blur(12px);
+}
+.cvp-info-show,
+.cvp-help-show {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0) scale(1);
+}
+
+.cvp-info-title,
+.cvp-help-title {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+  margin-bottom: var(--sp-2);
+}
+.cvp-info-row {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: 5px 0;
+  font-size: 12.5px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.cvp-info-row span:first-child {
+  color: rgba(255, 255, 255, 0.5);
+  flex-shrink: 0;
+}
+.cvp-info-row span:last-child {
+  color: #fff;
+  text-align: right;
+  word-break: break-all;
+}
+.cvp-info-loading,
+.cvp-info-error {
+  padding: var(--sp-2) 0;
+  font-size: 12.5px;
+  color: var(--fg-2);
+}
+
+.cvp-help-row {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: 4px 0;
+  font-size: 12.5px;
+  color: rgba(255, 255, 255, 0.78);
+}
+.cvp-help-keys {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--brand-1);
+  white-space: nowrap;
+}
+
+/* ---- 加载 / 错误遮罩 ---- */
+.cvp-loading-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  background: rgba(0, 0, 0, 0.82);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity var(--dur) var(--ease), visibility var(--dur) var(--ease);
+  z-index: 15;
+  text-align: center;
+  padding: var(--sp-4);
+}
+.cvp-loading-show {
+  opacity: 1;
+  visibility: visible;
+}
+.cvp-loading-soft {
+  background: transparent;
+  pointer-events: none;
+}
+
+.cvp-loading-spinner {
+  width: 38px;
+  height: 38px;
+  border: 3px solid rgba(255, 255, 255, 0.16);
+  border-top-color: var(--brand-1);
+  border-radius: var(--r-full);
+  animation: cvp-spin 0.85s linear infinite;
+  flex-shrink: 0;
+}
+@keyframes cvp-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.cvp-loading-text {
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
+  line-height: 1.4;
+}
+.cvp-loading-detail {
+  font-size: 11.5px;
+  font-family: var(--font-mono);
+  color: rgba(255, 255, 255, 0.62);
+  min-height: 17px;
+  line-height: 1.4;
+  max-width: 90%;
+  overflow: hidden;
+}
+
+/* 缓冲进度条：独立一行，不再与文字挤在一起 */
+.cvp-loading-bar {
+  width: min(240px, 70%);
+  height: 3px;
+  border-radius: var(--r-full);
+  background: rgba(255, 255, 255, 0.16);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.cvp-loading-bar-fill {
+  height: 100%;
+  width: 0;
+  border-radius: var(--r-full);
+  background: var(--brand-grad);
+  transition: width var(--dur) var(--ease);
+}
+
+.cvp-loading-retry {
+  padding: 7px 20px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #fff;
+  background: var(--brand-1);
+  border-radius: var(--r-full);
+  transition: transform var(--dur-fast) var(--ease), filter var(--dur-fast) var(--ease);
+}
+.cvp-loading-retry:hover {
+  filter: brightness(1.12);
+  transform: translateY(-1px);
+}
+
+/* 错误态：隐藏控制条，避免两套 UI 叠在一起 */
+.cvp-error .cvp-controls {
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+.cvp-error .cvp-loading-overlay {
+  opacity: 1;
+  visibility: visible;
+  background: rgba(10, 8, 10, 0.9);
+}
+.cvp-error .cvp-loading-spinner {
+  display: none;
+}
+.cvp-error .cvp-loading-text {
+  color: var(--danger);
+}
+
+/* ---- 双击快进指示 ---- */
+.cvp-tap-indicator {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%) scale(0.7);
+  width: 60px;
+  height: 60px;
+  border-radius: var(--r-full);
+  background: rgba(255, 255, 255, 0.2);
+  backdrop-filter: blur(6px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s var(--ease), transform 0.2s var(--ease);
+}
+.cvp-tap-indicator::after {
+  content: "10s";
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  font-weight: 700;
+  color: #fff;
+}
+.cvp-tap-left {
+  left: 12%;
+}
+.cvp-tap-right {
+  right: 12%;
+}
+.cvp-tap-show {
+  opacity: 1;
+  transform: translateY(-50%) scale(1);
+}
+
+/* ---- 调试日志 ---- */
+.cvp-debug-log {
+  position: absolute;
+  right: var(--sp-2);
+  bottom: 64px;
+  width: min(340px, 78%);
+  max-height: 40%;
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--r-md);
+  background: rgba(8, 9, 12, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: var(--shadow-2);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: #9fe6b0;
+  z-index: 30;
+  overflow: hidden;
+  backdrop-filter: blur(10px);
+}
+.cvp-debug-hidden {
+  display: none;
+}
+.cvp-debug-log.collapsed {
+  height: auto;
+}
+.cvp-debug-log.collapsed .cvp-debug-log-entries {
+  display: none;
+}
+
+.cvp-debug-log-header {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 5px var(--sp-2);
+  background: rgba(255, 255, 255, 0.06);
+  cursor: move;
+  user-select: none;
+  flex-shrink: 0;
+}
+.cvp-debug-log-title {
+  flex: 1;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.65);
+  letter-spacing: 0.04em;
+}
+.cvp-debug-log-collapse {
+  cursor: pointer;
+  color: rgba(255, 255, 255, 0.5);
+  font-weight: 700;
+  width: 14px;
+  text-align: center;
+}
+.cvp-debug-log-copy {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.6);
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.1);
+}
+.cvp-debug-log-copy:hover {
+  color: #fff;
+}
+
+.cvp-debug-log-entries {
+  padding: var(--sp-1) var(--sp-2);
+  overflow-y: auto;
+  max-height: 30vh;
+}
+.cvp-debug-log-line {
+  white-space: pre-wrap;
+  word-break: break-all;
+  padding: 1px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+.cvp-debug-log-line:last-child {
+  border-bottom: none;
+}
+
+/* ---- 小屏适配 ---- */
+@media (max-width: 640px) {
+  :root {
+    /* 手机控制条更紧凑，feed overlay 依此让位 */
+    --feed-controls-h: 104px;
+  }
+  .cvp-controls-center {
+    gap: var(--sp-3);
+  }
+  .cvp-play-btn,
+  .cvp-replay-btn {
+    min-width: 56px;
+    height: 56px;
+  }
+  .cvp-seek-back svg,
+  .cvp-seek-forward svg {
+    width: 24px;
+    height: 24px;
+  }
+  .cvp-controls-bottom {
+    padding: var(--sp-3) var(--sp-3) var(--sp-3);
+    gap: var(--sp-1);
+  }
+  .cvp-info-panel,
+  .cvp-help-panel {
+    left: var(--sp-2);
+    right: var(--sp-2);
+    width: auto;
+    bottom: 62px;
+  }
+  .cvp-debug-log {
+    display: none;
+  }
+  /* 触屏没有 hover：音量滑杆点按钮直接静音即可，浮层省略 */
+  .cvp-volume-slider {
+    display: none;
+  }
+  /* 顶部按钮组离边缘远一点，避开圆角与状态栏 */
+  .cvp-controls-top {
+    padding: calc(var(--sp-3) + env(safe-area-inset-top, 0px)) var(--sp-3) var(--sp-2);
+  }
+}
+
+@media (max-height: 480px) {
+  .cvp-controls-center {
+    display: none;
+  }
+}

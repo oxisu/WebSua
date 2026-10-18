@@ -1,0 +1,244 @@
+/* ============================================================
+   WebSua 设计系统 —— 令牌层
+   明暗主题：默认跟随系统，可手动覆盖（localStorage）
+   ============================================================ */
+
+:root {
+  /* ---- 断点（与 app.css 中的媒体查询保持一致）---- */
+  --bp-sm: 640px;
+  --bp-md: 1024px;
+  --bp-lg: 1440px;
+
+  /* ---- 间距刻度 ---- */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --sp-6: 32px;
+  --sp-7: 48px;
+  --sp-8: 64px;
+
+  /* ---- 圆角 ---- */
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-lg: 18px;
+  --r-xl: 26px;
+  --r-full: 999px;
+
+  /* ---- 字体 ---- */
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", Roboto, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+
+  /* ---- 动效 ---- */
+  --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur-fast: 140ms;
+  --dur: 240ms;
+  --dur-slow: 420ms;
+
+  /* ---- 品牌色（明暗共用）---- */
+  --brand-1: #6c8cff;
+  --brand-2: #a56cff;
+  --brand-3: #00d4c8;
+  --brand-grad: linear-gradient(135deg, var(--brand-1) 0%, var(--brand-2) 55%, var(--brand-3) 100%);
+
+  --danger: #ff5c6c;
+  --warn: #ffb020;
+  --ok: #2ed47a;
+
+  --header-h: 60px;
+  --tabbar-h: 58px;
+  --sidebar-w: 260px;
+}
+
+/* ============================================================
+   暗色主题（默认 / 系统偏好）
+   ============================================================ */
+:root,
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  --bg-0: #08090c;
+  --bg-1: #0e1015;
+  --bg-2: #14171f;
+  --bg-3: #1b1f2a;
+  --bg-4: #232836;
+  --bg-hover: #1f2431;
+
+  --fg-0: #f2f5fa;
+  --fg-1: #c8d0de;
+  --fg-2: #8b95a9;
+  --fg-3: #5f6a7e;
+  --fg-inverse: #08090c;
+
+  --line-1: rgba(255, 255, 255, 0.09);
+  --line-2: rgba(255, 255, 255, 0.16);
+
+  --glass: rgba(14, 16, 21, 0.72);
+  --glass-strong: rgba(10, 12, 16, 0.92);
+  --glass-line: rgba(255, 255, 255, 0.1);
+
+  --shadow-1: 0 2px 8px rgba(0, 0, 0, 0.4);
+  --shadow-2: 0 8px 28px rgba(0, 0, 0, 0.5);
+  --shadow-3: 0 20px 60px rgba(0, 0, 0, 0.62);
+
+  --scrim: rgba(0, 0, 0, 0.62);
+  --skeleton: linear-gradient(90deg, var(--bg-2) 25%, var(--bg-3) 37%, var(--bg-2) 63%);
+}
+
+/* ============================================================
+   亮色主题
+   ============================================================ */
+[data-theme="light"] {
+  color-scheme: light;
+
+  --bg-0: #f4f6fa;
+  --bg-1: #ffffff;
+  --bg-2: #f7f9fc;
+  --bg-3: #eef1f6;
+  --bg-4: #e4e9f1;
+  --bg-hover: #eaeeF5;
+
+  --fg-0: #0d1117;
+  --fg-1: #333c4d;
+  --fg-2: #626d80;
+  --fg-3: #8f9aad;
+  --fg-inverse: #ffffff;
+
+  --line-1: rgba(13, 17, 23, 0.1);
+  --line-2: rgba(13, 17, 23, 0.18);
+
+  --glass: rgba(255, 255, 255, 0.78);
+  --glass-strong: rgba(255, 255, 255, 0.94);
+  --glass-line: rgba(13, 17, 23, 0.1);
+
+  --shadow-1: 0 1px 3px rgba(13, 17, 23, 0.08);
+  --shadow-2: 0 6px 22px rgba(13, 17, 23, 0.1);
+  --shadow-3: 0 18px 48px rgba(13, 17, 23, 0.14);
+
+  --scrim: rgba(13, 17, 23, 0.42);
+  --skeleton: linear-gradient(90deg, var(--bg-3) 25%, var(--bg-4) 37%, var(--bg-3) 63%);
+
+  --brand-1: #4d6bff;
+  --brand-2: #8b45e0;
+  --brand-3: #00a99a;
+}
+
+/* 主题切换过渡：只在切换瞬间启用，避免首屏闪烁 */
+.theme-transition,
+.theme-transition * {
+  transition: background-color var(--dur) var(--ease),
+    border-color var(--dur) var(--ease), color var(--dur) var(--ease) !important;
+}
+
+/* ============================================================
+   基础重置
+   ============================================================ */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--fg-0);
+  background: var(--bg-0);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overscroll-behavior-y: none;
+}
+
+h1, h2, h3, h4, h5, h6, p, figure {
+  margin: 0;
+}
+
+button, input, select, textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+  background: none;
+  border: none;
+  padding: 0;
+}
+
+a {
+  color: var(--brand-1);
+  text-decoration: none;
+}
+
+img, video {
+  display: block;
+  max-width: 100%;
+}
+
+ul, ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--line-2);
+  border-radius: var(--r-full);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--fg-3);
+}
+
+:focus-visible {
+  outline: 2px solid var(--brand-1);
+  outline-offset: 2px;
+  border-radius: var(--r-sm);
+}
+
+::selection {
+  background: var(--brand-1);
+  color: #fff;
+}
+
+/* 屏幕阅读器专用 */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* 尊重系统的减少动画偏好 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
