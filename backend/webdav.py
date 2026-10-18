@@ -253,7 +253,6 @@ class WebDAVClient:
                 # 大目录超时时整个子树都会消失，用户扫出的数量会对不上。
                 # 失败目录由 on_error 回调（scanner.on_dir_error）计入 failed_dirs 并写日志，
                 # 这里只负责继续下钻，不要引用 webdav 作用域里不存在的 failed_dirs。
-                failed_dirs.append((path, str(e)))
                 if on_error:
                     on_error(path, str(e))
                 continue  # 跳过该目录继续下钻
