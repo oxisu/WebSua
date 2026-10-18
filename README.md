@@ -28,9 +28,11 @@ python main.py
 
 ```bash
 python main.py --port 9000        # 指定端口（被占用自动顺延）
-python main.py --host 0.0.0.0     # 允许局域网访问
 python main.py --browser          # 启动并自动打开浏览器（默认不开）
 python main.py --scan             # 启动后立即扫描所有数据源
+
+# 局域网访问（手机 / 电视 / 别的电脑）：必须同时设置访问密码，否则拒绝启动
+python main.py --host 0.0.0.0 --password 你的密码
 ```
 
 ### 常见 WebDAV 地址
@@ -160,6 +162,27 @@ video.mp4 + video.mp4.jpg         ← 原名 + .jpg（其他工具）
   **并记录被远端删除的具体路径**，想查「这个文件什么时候没的」有据可查
 - 失败目录修好后重扫成功 → 徽标自动消失；仍然失败的目录继续留在列表里，可再次重扫
 
+### 局域网访问密码（门禁）
+
+默认只绑 `127.0.0.1`，**只有本机能访问，不需要密码**。一旦 `--host 0.0.0.0`
+暴露到局域网，同一个 Wi-Fi 下任何人都能打开你的媒体库 —— 所以：
+
+- **非本机绑定强制设密码**：没设密码就绑局域网会**直接拒绝启动**，而不是警告后裸奔
+  ```bash
+  python main.py --host 0.0.0.0 --password 你的密码
+  # 或用环境变量：WEBSUA_ACCESS_PASSWORD=xxx python main.py --host 0.0.0.0
+  ```
+- **统一鉴权**：`/api/*` 全部受保护，**媒体流 / 封面 / 字幕一样要过门禁**
+  （只放行登录接口、`/api/auth/status` 与健康检查）。静态资源照常下发 ——
+  否则登录界面自己都渲染不出来
+- **凭据三种携带方式**：浏览器走 HttpOnly Cookie（`<video>` / `<img>` 的请求
+  自动带凭据，前端不用给媒体 URL 拼 token）；脚本用 `Authorization: Bearer <token>`；
+  外部播放器（VLC 等）用 `?token=<token>`，登录响应里会直接返回 token
+- **密码不明文入库**：pbkdf2-hmac-sha256 + 随机 salt，只存摘要。数据库被拷走
+  也拿不到原密码。**改密码会吊销全部已签发令牌**（旧 token 是旧密码签出来的）
+- **登录失败限流**：连续错 5 次锁定 60 秒，挡住局域网内的暴力猜解
+- 只做**单用户门禁**，不做多用户体系 —— 家庭自用场景一个人够用
+
 ### 扫描控制
 
 - 点击「扫描」**先做连通性检测**（probe），密码错/地址错立即报错，不会白扫
@@ -227,6 +250,8 @@ WebSua/
 │   ├── test_incremental.py # 增量扫描与断点续扫 43 项（未变跳过/签名/续扫/取消保留）
 │   ├── test_failed_dirs.py # 失败目录重扫 + 差异报告 24 项（持久化/DTO可观测/mode=failed/消失路径）
 │   ├── test_failed_dirs_ui.js # 失败目录 UI 9 项（自包含：自带假服务；徽标/重扫按钮/补齐）
+│   ├── test_access.py       # 局域网门禁 32 项（拦截媒体流/三种凭据/限流/拒绝裸奔启动）
+│   ├── test_access_ui.js    # 门禁登录界面 9 项（自包含；遮罩/错误提示/登录后放行）
 │   ├── test_scan_ui.js    # 扫描面板 UI 14 项（增量按钮/完成统计/继续扫描/放弃断点）
 │   ├── test_browser.js     # 浏览器 60 项（三断点 × 明暗 × 布局）
 │   ├── test_new_features.js# 新功能 8 项
@@ -244,9 +269,17 @@ WebSua/
 
 ## API 一览
 
+> 开启访问密码后，`/api/*` **全部需要鉴权**（Cookie / `Authorization: Bearer` /
+> `?token=`），媒体流与封面同样在内。仅 `/api/auth/login`、`/api/auth/status`、
+> `/api/health` 免鉴权。
+
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/api/health`、`/api/stats` | 健康检查 / 全局统计 |
+| GET | `/api/auth/status` | 门禁状态（`required` / `authed`），**免鉴权** |
+| POST | `/api/auth/login` | 用访问密码换令牌（下发 HttpOnly Cookie，并回传 token），**免鉴权** |
+| POST | `/api/auth/logout` | 吊销当前令牌并清 Cookie |
+| POST | `/api/auth/password` | 设置 / 修改 / 关闭访问密码（已开启门禁时需登录；局域网绑定下不允许关闭） |
 | GET/POST | `/api/sources` | 列表（含分类计数、总大小）/ 新增 |
 | PUT/DELETE | `/api/sources/{id}` | 修改（密码留空保留）/ 删除（级联清索引） |
 | POST | `/api/sources/{id}/probe` | 连通性测试，不落库 |
