@@ -134,6 +134,9 @@ def main() -> int:
     results.append(("播放队列", run(
         "目录自然序（第2集<第10集）/ 队列持久化 / 失效id剔除 / 非法payload",
         [PY, "tests/test_queue.py"])))
+    results.append(("增量扫描与断点续扫", run(
+        "未变项跳过（indexed_at 不刷新）/ mtime+size 签名 / 断点续扫 / 取消保留进度",
+        [PY, "tests/test_incremental.py"])))
 
     # 认证场景需要把假服务器切到 auth 模式
     print("\n  切换假服务器到认证模式…")

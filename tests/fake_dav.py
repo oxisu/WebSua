@@ -19,6 +19,11 @@ from urllib.parse import unquote, urlsplit
 # 虚拟文件表：路径 -> (内容 bytes, 类型)
 FILES: dict[str, tuple[bytes, str]] = {}
 
+# 可按文件覆盖的 Last-Modified（增量扫描测试用：同大小但改过 mtime）。
+# 缺省用 DEFAULT_LM —— 与线上网盘一样，多数服务器对所有文件返回同一时间。
+MTIMES: dict[str, str] = {}
+DEFAULT_LM = "Mon, 03 Oct 2026 10:00:00 GMT"
+
 MIME = {
     ".mp4": "video/mp4", ".mkv": "video/x-matroska", ".webm": "video/webm",
     ".jpg": "image/jpeg", ".png": "image/png", ".mp3": "audio/mpeg",
@@ -164,7 +169,8 @@ class Handler(BaseHTTPRequestHandler):
 
         def entry(href, is_dir, size=0, mime=""):
             rt = "<D:collection/>" if is_dir else ""
-            lm = "Mon, 03 Oct 2026 10:00:00 GMT"
+            # href 是 quote 过的（中文名会变成 %XX），查 MTIMES 要先解码
+            lm = MTIMES.get(unquote(href[len("/dav"):]), DEFAULT_LM)
             cl = "" if is_dir else f"<D:getcontentlength>{size}</D:getcontentlength>"
             ct = "" if is_dir else f"<D:getcontenttype>{mime}</D:getcontenttype>"
             return (

@@ -54,7 +54,19 @@ const check = (l, c, d = '') => (c ? PASS : FAIL).push(l + (d ? '  ' + d : ''));
     // 等扫描完成
     await p.waitForTimeout(9000);
     await p.locator('.nav-btn[data-view="library"]').click();
-    await p.waitForTimeout(1500);
+    // 等卡片真正渲染、且封面（TG 同名海报/异步截帧）加载出来：
+    // 库刚扫完卡片异步渲染，不等地话会瞬间读到 0 张而误判（偶发失败根因）
+    await p.waitForFunction(() => {
+        const cards = [...document.querySelectorAll('.card')];
+        if (!cards.length) return false;
+        const named = cards.filter(c => /动画/.test(c.querySelector('.card-name')?.textContent || ''));
+        const withImg = named.filter(c => c.querySelector('.card-thumb img')).length;
+        // 若第一屏没覆盖到「动画」类，滚动触发「加载更多」再判
+        if (named.length === 0 && document.querySelector('.more-btn')) {
+            document.querySelector('.more-btn').click();
+        }
+        return named.length > 0 && withImg >= 3;
+    }, { timeout: 20000, polling: 500 }).catch(() => {});
     const posterInfo = await p.evaluate(() => {
         const cards = [...document.querySelectorAll('.card')];
         // 有「动画」名且加载出图的比例

@@ -38,7 +38,7 @@ const check = (l, c, d = '') => (c ? PASS : FAIL).push(l + (d ? '  ' + d : ''));
     // ---- 清场并重建数据源（隔离实例，动的是 data-test） ----
     // 注意：必须重新加载页面 —— 启动时页面已从后端拉过队列状态，
     // 这里的 DELETE 只清了库，不清浏览器内存里的 mode/shuffle。
-    await p.evaluate(async () => {
+    const sid = await p.evaluate(async () => {
         const d = await (await fetch('/api/sources')).json();
         for (const s of d.sources) {
             await fetch(`/api/sources/${s.id}`, { method: 'DELETE' });
@@ -50,23 +50,35 @@ const check = (l, c, d = '') => (c ? PASS : FAIL).push(l + (d ? '  ' + d : ''));
         });
         const sid = (await r.json()).id;
         await fetch(`/api/sources/${sid}/scan`, { method: 'POST' });
+        return sid;
     });
     // 清掉本地会话/设置，保证 reload 后是全新的启动状态
     await p.evaluate(() => { try { localStorage.clear(); } catch {} });
     await p.reload({ waitUntil: 'networkidle' });
     await p.waitForTimeout(1000);
-    // 等扫描完成（37+12 个文件，限流已关，几秒内完成）
-    await p.waitForTimeout(9000);
+    // 等**这个源**的扫描完成：必须按 source_id 匹配——/api/tasks 里还有
+    // 上一轮测试遗留的 done 任务，按 found 数匹配会瞬间假阳性
+    await p.waitForFunction(
+        (sid) => fetch('/api/tasks').then(r => r.json()).then(d =>
+            (d.tasks || []).some(t => t.source_id === sid && t.state === 'done')),
+        sid, { timeout: 60000, polling: 500 });
+    await p.waitForTimeout(800);
 
     // ---- 1. 从媒体库点开「第5集」 ----
     await p.locator('.nav-btn[data-view="library"]').click();
-    await p.waitForTimeout(1200);
     await p.locator('.search input').fill('第5集');
-    await p.waitForTimeout(900);
+    // 直接等目标卡片「可见」：库刚扫完卡片异步加载 + 搜索去抖过滤，
+    // 不等地话 card.count() 会瞬间读到 0 而误判「找不到」（之前偶发失败根因）
     const card = p.locator('.card', { hasText: '第5集.mp4' }).first();
-    check('媒体库里能找到第5集', await card.count() > 0);
+    let found = true;
+    try { await card.waitFor({ state: 'visible', timeout: 15000 }); }
+    catch { found = false; }
+    check('媒体库里能找到第5集', found);
     await card.click();
-    await p.waitForTimeout(2500);
+    // 等队列真正生成（jumpToQueue → 拉目录自然序 → 渲染），不用固定 sleep
+    await p.waitForFunction(
+        () => document.querySelectorAll('#queueList .q-item').length === 12,
+        { timeout: 20000, polling: 300 });
 
     // ---- 2. 队列按目录自然序生成 ----
     const titles = await p.$$eval('#queueList .q-item .q-title', ns => ns.map(n => n.textContent));
@@ -99,7 +111,16 @@ const check = (l, c, d = '') => (c ? PASS : FAIL).push(l + (d ? '  ' + d : ''));
 
     // ---- 3. 点队列里第9集 → 滚过去且高亮跟随 ----
     await p.locator('#queueList .q-item', { hasText: '第9集.mp4' }).first().click();
-    await p.waitForTimeout(2000);
+    // 高亮跟随 + 视频流真的滚到位（smooth 滚动要时间，两个条件都等）
+    await p.waitForFunction(
+        () => {
+            if (document.querySelector('#queueList .q-item.playing .q-title')?.textContent !== '第9集.mp4') return false;
+            const f = document.querySelector('.feed');
+            if (!f) return false;
+            const idx = Math.round(f.scrollTop / f.clientHeight);
+            return document.querySelectorAll('.feed-title')[idx]?.textContent === '第9集.mp4';
+        },
+        { timeout: 20000, polling: 300 });
     const playing2 = await p.$$eval('#queueList .q-item.playing .q-title', ns => ns.map(n => n.textContent));
     const feedState2 = await p.evaluate(() => {
         const feed = document.querySelector('.feed');
