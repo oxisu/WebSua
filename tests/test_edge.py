@@ -1,5 +1,6 @@
 """边界场景测试：Basic 认证、忽略 Range 的坏服务器、远端文件消失。"""
 import json
+import os
 import sys
 import time
 import urllib.error
