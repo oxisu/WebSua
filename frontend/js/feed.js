@@ -7,6 +7,8 @@
  *  3. IntersectionObserver 判定「当前条目」，比监听 scroll 更准更省
  *  4. 预取 —— 接近底部时自动加载下一批，避免滚到空白
  *  5. 坏条目自动跳过 —— 播放器 onError 时连跳，防止卡死在一条打不开的视频上
+ *  6. 播放队列 —— 翻页/连播沿「下一集」的目录自然序走（见 queue.js），
+ *     随机流只负责发现，队列负责连续
  */
 
 import { createVideoPlayer, destroyActivePlayer } from './video-player.js';
@@ -20,15 +22,18 @@ export class VideoFeed {
     constructor(root, opts = {}) {
         this.root = root;
         this.onOpenDetail = opts.onOpenDetail || (() => {});
+        this.queue = opts.queue || null;      // 播放队列（「下一集」），可为空
         this.items = [];
         this.currentIndex = 0;
         this.offset = 0;
         this.total = 0;
         this.loading = false;
         this.exhausted = false;
-        this.filter = { sources: [], kinds: ['video'], order: 'random' };
+        this.filter = { sources: [], kinds: ['video'], order: 'random', folder: '' };
         this.slides = new Map();   // mediaId -> {node, player}
         this.observer = null;
+        this._syncTimer = null;    // 队列重建防抖
+        this._queueNav = false;    // 队列导航中：暂停 _syncQueue，避免竞争
         this._build();
     }
 
@@ -58,6 +63,10 @@ export class VideoFeed {
 
         this.root.addEventListener('scroll', this._onScroll.bind(this), { passive: true });
 
+        // 可视区尺寸变化（旋屏 / 侧栏折叠）时重新摆放导航按钮
+        this._onResize = () => this._positionNav();
+        window.addEventListener('resize', this._onResize);
+
         // 键盘上下键翻页（播放器自己管的是空格/左右）
         this._onKey = e => {
             if (!this.isActive) return;
@@ -84,10 +93,13 @@ export class VideoFeed {
         if (!entry) return;
         const slide = this.slides.get(entry.id);
         if (slide && !slide.player) this._mountPlayer(slide);
+        this._positionNav();
     }
 
     setFilter(filter) {
-        this.filter = { ...this.filter, ...filter };
+        // 不带 folder 的筛选（切来源 / 重新随机等）一律清掉目录限定 ——
+        // 否则沿队列切过目录后，旧 folder 会一直粘在筛选条件上
+        this.filter = { ...this.filter, ...filter, folder: filter.folder || '' };
         this.reset();
     }
 
@@ -115,6 +127,7 @@ export class VideoFeed {
         });
         if (f.sources?.length) p.set('sources', f.sources.join(','));
         if (f.kinds?.length) p.set('kinds', f.kinds.join(','));
+        if (f.folder) p.set('folder', f.folder);
         return p.toString();
     }
 
@@ -227,8 +240,30 @@ export class VideoFeed {
             else if (!shouldPlay && s.player) this._unmountPlayer(s);
         }
         this._updateNav();
+        // 队列跟随：正在播的这条就是「下一集」的锚点
+        this._syncQueue(entry);
         // 提前取下一批
         if (index >= this.items.length - PRELOAD_RADIUS - 2) this.loadMore();
+    }
+
+    /**
+     * 把当前播放项同步进队列。
+     *
+     *  - 已在队列里 → 立即把队列索引移过来（面板高亮不延迟）；
+     *  - 不在 → 防抖 350ms 后按它所在目录重建队列。防抖是必须的：
+     *    随机流里连续滑过几个不同目录的视频时，只有最后停留的那个
+     *    才值得生成队列，否则每滑一条就打一次目录接口。
+     */
+    _syncQueue(item) {
+        if (!this.queue || !item || this._queueNav) return;
+        if (this.queue.has(item.id)) { this.queue.setIndexTo(item.id); return; }
+        clearTimeout(this._syncTimer);
+        this._syncTimer = setTimeout(() => {
+            if (this._queueNav) return;
+            this.queue.ensureFor(item)
+                .then(() => { if (this.onQueueChange) this.onQueueChange(); })
+                .catch(() => {});
+        }, 350);
     }
 
     _mountPlayer(slide) {
@@ -282,7 +317,17 @@ export class VideoFeed {
         log(`跳过无法播放的条目：${reason}`);
         setTimeout(() => this.go(1, { smooth: false }), 600);
     }
+    /**
+     * 上一条 / 下一条。
+     *
+     * 队列优先：连播、上下键、导航按钮都沿「下一集」顺序走；
+     * 队列播到头（循环关）才回落到视频流自身的顺序。
+     */
     go(delta, { smooth = true } = {}) {
+        if (this.queue?.enabled && this.queue.size && Math.abs(delta) === 1) {
+            const id = delta > 0 ? this.queue.next() : this.queue.prev();
+            if (id != null) { this.jumpToQueue(id, { smooth }); return; }
+        }
         const next = Math.max(0, Math.min(this.items.length - 1, this.currentIndex + delta));
         if (next === this.currentIndex) return;
         const node = this.slides.get(this.items[next]?.id)?.node;
@@ -296,6 +341,22 @@ export class VideoFeed {
         if (!this.prevBtn || !this.nextBtn) return;
         this.prevBtn.disabled = this.currentIndex <= 0;
         this.nextBtn.disabled = this.currentIndex >= this.items.length - 1 && this.exhausted;
+        this._positionNav();
+    }
+
+    /**
+     * 把上一条/下一条导航按钮摆在**可视区**垂直中点。
+     *
+     * 按钮是 .feed（可滚动容器）的绝对定位子元素，会随内容一起滚走 ——
+     * 直接 top:50% 在滚动后永远点不到。用 transform 抵消滚动量，
+     * 视觉位置 = 内容顶部 - scrollTop + (scrollTop + 半屏高 - 半键高) = 半屏高 - 半键高。
+     */
+    _positionNav() {
+        if (!this.prevBtn || !this.nextBtn) return;
+        const y = this.root.scrollTop + this.root.clientHeight / 2 - 20;
+        const t = `translateY(${y}px)`;
+        this.prevBtn.style.transform = t;
+        this.nextBtn.style.transform = t;
     }
 
     _onScroll() {
@@ -308,6 +369,7 @@ export class VideoFeed {
             if (idx >= 0 && idx < this.items.length && idx !== this.currentIndex) {
                 this._activate(idx);
             }
+            this._positionNav();
             // 到底部时预取
             if (this.root.scrollHeight - this.root.scrollTop - this.root.clientHeight < h * 2) {
                 this.loadMore();
@@ -315,25 +377,115 @@ export class VideoFeed {
         });
     }
 
-    /** 跳到指定媒体（从队列点进来时用）。 */
-    async jumpTo(mediaId) {
-        let idx = this.items.findIndex(m => m.id === mediaId);
-        if (idx === -1) {
-            // 不在当前列表里 —— 清掉筛选重取一次
-            const origSources = this.filter.sources;
-            const data = await api('/api/media?' + this._query({ limit: '200', offset: '0' }));
-            this.filter.sources = origSources;
-            this.items = data.media || [];
-            this.slides.clear();
-            this.observer.disconnect();
-            this.root.innerHTML = '';
-            this.root.append(this.prevBtn, this.nextBtn);
-            this._appendSlides();
-            idx = this.items.findIndex(m => m.id === mediaId);
+    /**
+     * 跳到指定媒体（从队列或媒体库点进来时用）。
+     *
+     * 语义是「进入这条视频的连播上下文」：视频流切成它所在目录的自然序列表，
+     * 随机序里定位是不可复现的（SQLite RANDOM() 每次结果不同），目录序才确定。
+     * 唯一例外：整个视频流已经就是这个目录的自然序、且目标就在里面 ——
+     * 沿队列连播时的常态，直接滚过去即可，不必为切一集重建整个列表。
+     */
+    async jumpTo(mediaId, opts = {}) {
+        const smooth = opts.smooth !== false;
+        // 元数据：队列缓存 → 当前列表 → 接口
+        let meta = this.queue?.get(mediaId)
+            || this.items.find(m => m.id === mediaId) || null;
+        if (!meta) {
+            try {
+                const d = await api(`/api/media/${mediaId}`);
+                meta = { folder: d.folder, source_id: d.source_id };
+            } catch { /* 拿不到就退回旧行为 */ }
         }
-        if (idx === -1) { showToast('未找到该文件', 'err'); return; }
-        const node = this.slides.get(this.items[idx].id)?.node;
+        if (meta && meta.folder != null && meta.source_id != null) {
+            const inList = this.items.some(m => m.id === mediaId);
+            const sameFolder = this.items.length > 0 && this.filter.order === 'natural'
+                && (this.filter.folder || '') === (meta.folder || '')
+                && this.items.every(m => m.folder === meta.folder
+                    && m.source_id === meta.source_id);
+            if (inList && sameFolder) {
+                const node = this.slides.get(mediaId)?.node;
+                if (node) node.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto', block: 'start' });
+                this._syncQueue(this.items[this.items.findIndex(m => m.id === mediaId)]);
+                return true;
+            }
+            return this._loadFolderAndActivate(meta.source_id, meta.folder, mediaId, smooth);
+        }
+        // 元数据也拿不到 —— 清掉筛选重取一次（旧行为，兜底）
+        const origSources = this.filter.sources;
+        const data = await api('/api/media?' + this._query({ limit: '200', offset: '0' }));
+        this.filter.sources = origSources;
+        this.items = data.media || [];
+        this.slides.clear();
+        this.observer.disconnect();
+        this.root.innerHTML = '';
+        this.root.append(this.prevBtn, this.nextBtn);
+        this._appendSlides();
+        const idx = this.items.findIndex(m => m.id === mediaId);
+        if (idx === -1) { showToast('未找到该文件', 'err'); return false; }
+        const node = this.slides.get(mediaId)?.node;
         if (node) node.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        this._syncQueue(this.items[idx]);
+        return true;
+    }
+
+    /**
+     * 沿队列跳转：目标就是当前项时原地重播（单集循环用），
+     * 否则切到它所在目录的自然序列表再定位。
+     */
+    async jumpToQueue(id, opts = {}) {
+        if (!this.queue?.has(id)) return this.jumpTo(id, opts);
+        const cur = this.items[this.currentIndex];
+        if (cur && cur.id === id) {
+            const slide = this.slides.get(id);
+            if (slide?.player) {
+                slide.player.currentTime = 0;
+                slide.player.resume();
+                return true;
+            }
+        }
+        return this.jumpTo(id, opts);
+    }
+
+    /** 把视频流切成「某来源某目录」的自然序列表，并激活其中的 mediaId。 */
+    async _loadFolderAndActivate(sourceId, folder, mediaId, smooth = true) {
+        this._queueNav = true;
+        try {
+            // folder 必须一起进筛选条件：少了它，「这个目录的自然序」会变成
+            // 「整个源的自然序」，连播直接乱套
+            this.filter = {
+                ...this.filter, sources: [sourceId], kinds: ['video'],
+                folder: folder || '', order: 'natural',
+            };
+            await this.reset();
+            // 目录可能跨页：翻页找目标，封顶 20 页
+            for (let i = 0;
+                 i < 20 && this.items.length
+                 && !this.items.some(m => m.id === mediaId) && !this.exhausted;
+                 i++) {
+                await this.loadMore();
+            }
+            const idx = this.items.findIndex(m => m.id === mediaId);
+            if (idx === -1) {
+                showToast('未找到该文件', 'err');
+                return false;
+            }
+            // 距离远时瞬间定位：平滑滚动会触发一连串中间条的激活，
+            // 每个都建/销一次播放器，纯属浪费
+            const dist = Math.abs(idx - Math.max(0, this.currentIndex));
+            this._activate(idx);
+            const node = this.slides.get(mediaId)?.node;
+            if (node) {
+                node.scrollIntoView({
+                    behavior: smooth && dist <= 2 ? 'smooth' : 'auto', block: 'start',
+                });
+            }
+            return true;
+        } finally {
+            this._queueNav = false;
+            // reset/翻页过程中的 _activate 可能动过队列索引，导航结束后对齐
+            this.queue?.setIndexTo(mediaId);
+            if (this.onQueueChange) this.onQueueChange();
+        }
     }
 
     /**
@@ -345,7 +497,7 @@ export class VideoFeed {
      */
     async restoreSession(mediaId, sources, order) {
         const effOrder = (order && order !== 'random') ? order : 'new';
-        this.filter = { ...this.filter, sources: sources || [], order: effOrder };
+        this.filter = { ...this.filter, sources: sources || [], order: effOrder, folder: '' };
         await this.reset();
         // 翻页找 mediaId，最多 8 页
         for (let i = 0; i < 8 && !this.items.some(m => m.id === mediaId) && !this.exhausted; i++) {
@@ -378,6 +530,8 @@ export class VideoFeed {
         destroyActivePlayer();
         this.observer?.disconnect();
         document.removeEventListener('keydown', this._onKey);
+        window.removeEventListener('resize', this._onResize);
+        clearTimeout(this._syncTimer);
     }
 }
 

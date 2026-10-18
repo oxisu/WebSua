@@ -377,7 +377,8 @@ body.queue-collapsed .queue {
 }
 body.queue-collapsed .queue-body,
 body.queue-collapsed .queue .side-title,
-body.queue-collapsed .queue-refresh {
+body.queue-collapsed .queue-count,
+body.queue-collapsed .queue-tool {
   display: none;
 }
 body.queue-collapsed .queue-head {
@@ -467,6 +468,107 @@ body.queue-collapsed .queue-toggle svg {
 .q-meta {
   font-size: 11px;
   color: var(--fg-3);
+}
+
+/* ---- 播放队列：标题计数 / 工具激活态 ---- */
+.queue-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.queue-count {
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--fg-3);
+}
+.queue-tools .icon-btn.on {
+  color: var(--brand-1);
+  background: var(--bg-hover);
+}
+.queue-tools .icon-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ---- 播放队列：拖拽把手 / 序号 / 移除 ---- */
+.q-grip {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  color: var(--fg-3);
+  cursor: grab;
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+.q-item:hover .q-grip {
+  opacity: 0.7;
+}
+.q-item.q-dragging {
+  opacity: 0.4;
+}
+.q-item.q-dragging .q-grip {
+  cursor: grabbing;
+}
+/* 落点指示：拖到谁身上，就插在谁前面 */
+.q-item.q-drop {
+  box-shadow: inset 0 2px 0 var(--brand-1);
+}
+.q-pos {
+  width: 18px;
+  flex-shrink: 0;
+  align-self: center;
+  text-align: center;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--fg-3);
+}
+.q-pos.on {
+  color: var(--brand-1);
+}
+.q-remove {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border: none;
+  background: var(--bg-3);
+  color: var(--fg-2);
+  border-radius: var(--r-full);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+.q-item:hover .q-remove {
+  opacity: 1;
+}
+.q-remove:hover {
+  background: var(--danger);
+  color: #fff;
+}
+
+/* ---- 播放队列：空状态 ---- */
+.queue-empty {
+  padding: 28px 16px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+.queue-empty-icon {
+  color: var(--fg-3);
+  opacity: 0.6;
+}
+.queue-empty-title {
+  font-size: 13px;
+  color: var(--fg-1);
+}
+.queue-empty-desc {
+  font-size: 11.5px;
+  color: var(--fg-3);
+  line-height: 1.6;
 }
 
 /* ============================================================
@@ -600,8 +702,10 @@ body.queue-collapsed .queue-toggle svg {
 /* 左右翻页箭头 */
 .feed-nav {
   position: absolute;
-  top: 50%;
-  transform: translateY(-50%);
+  /* top:0 + JS 反向 transform：按钮挂在可滚动内容内部，
+     直接 top:50% 会随内容滚走（滚动后永远点不到），
+     必须在 _positionNav 里用 transform 抵消滚动量 */
+  top: 0;
   width: 40px;
   height: 40px;
   display: none;
@@ -611,7 +715,8 @@ body.queue-collapsed .queue-toggle svg {
   backdrop-filter: blur(8px);
   color: #fff;
   z-index: 20;
-  transition: all var(--dur-fast) var(--ease);
+  /* 不要 transition all —— transform 每帧都在变，会被 transition 拖成慢动作 */
+  transition: background var(--dur-fast) var(--ease), opacity var(--dur-fast) var(--ease);
 }
 .feed-nav:hover {
   background: rgba(0, 0, 0, 0.68);

@@ -2,7 +2,7 @@
  * 应用入口：视图路由、侧栏筛选、队列、主题、响应式。
  */
 
-import { $, el, api, initTheme, cycleTheme, showToast, debounce, throttle, formatSize, formatTime } from './utils.js';
+import { $, el, api, initTheme, cycleTheme, showToast, debounce, formatSize, formatTime } from './utils.js';
 import { loadProgress } from './progress.js';
 import { VideoFeed } from './feed.js';
 import { MediaGrid, toggleFav } from './grid.js';
@@ -10,13 +10,14 @@ import { getThumbnail } from './thumbs.js';
 import { SourceManager, icon, openModal, switchRow, field } from './sources.js';
 import { getSetting, setSetting, allSettings, onSettingsChange } from './settings.js';
 import { destroyActivePlayer } from './video-player.js';
+import { PlayQueue } from './queue.js';
 
 const app = {
     view: 'feed',
     sources: [],
     activeSources: new Set(),   // 空集 = 全部
     activeSource: null,         // 当前聚焦的源 id（点击来源时）
-    queue: [],
+    queue: null,
     feed: null,
     grid: null,
     srcMgr: null,
@@ -30,6 +31,7 @@ async function boot() {
     initTheme();
     buildShell();
     await loadProgress();
+    await app.queue.load();     // 恢复持久化的播放队列（失败留空，不阻塞启动）
     await refreshSources();
     wireGlobalEvents();
     // 恢复上次播放会话（源/顺序/当前进度），失败则从默认视频流开始
@@ -127,34 +129,59 @@ function buildShell() {
 
     /* ---- 队列 ---- */
     const queueList = el('div', { class: 'queue-list', id: 'queueList' });
-    // 队列（「接下来」）滚动到底自动加载下一页，与媒体库一致
-    queueList.addEventListener('scroll', throttle(() => {
-        const { scrollTop, scrollHeight, clientHeight } = queueList;
-        if (scrollHeight - scrollTop - clientHeight < clientHeight * 1.2 && app.feed) {
-            app.feed.loadMore();   // loadMore 内部会回调 onOpenDetail(=renderQueue)
-        }
-    }, 200));
     const queueBody = el('div', { class: 'queue-body' }, queueList);
+
+    // 工具：随机 / 循环 / 清空 / 重新随机 / 收起
+    const shuffleBtn = el('button', {
+        class: 'icon-btn queue-tool', id: 'queueShuffle',
+        style: { width: '28px', height: '28px' },
+        'aria-label': '随机播放', title: '随机播放',
+        onclick: () => { app.queue.toggleShuffle(); syncQueueTools(); },
+    }, icon('shuffle', 14));
+    const modeBtn = el('button', {
+        class: 'icon-btn queue-tool', id: 'queueMode',
+        style: { width: '28px', height: '28px' },
+        'aria-label': '循环模式', title: '循环模式',
+        onclick: () => { app.queue.cycleMode(); syncQueueTools(); },
+    }, icon('repeat', 14));
+    const clearBtn = el('button', {
+        class: 'icon-btn queue-tool', id: 'queueClear',
+        style: { width: '28px', height: '28px' },
+        'aria-label': '清空队列', title: '清空队列',
+        onclick: () => {
+            app.queue.clear();
+            syncQueueTools();
+            showToast('已清空播放队列，连播随之关闭', 'ok');
+        },
+    }, icon('trash', 14));
+    const refreshBtn = el('button', {
+        class: 'icon-btn queue-tool queue-refresh',
+        style: { width: '28px', height: '28px' },
+        'aria-label': '重新随机', title: '重新随机（回到随机视频流）',
+        onclick: () => {
+            // 必须显式把 order 拉回 random：沿队列连播时 filter.order
+            // 已被切成 natural，只 reset 的话出来还是目录序
+            app.feed?.setFilter({ ...currentSourceFilter(), kinds: ['video'], order: 'random' });
+        },
+    }, icon('refresh', 14));
+    const toggleBtn = el('button', {
+        class: 'icon-btn queue-toggle', style: { width: '28px', height: '28px' },
+        'aria-label': '收起队列', title: '收起 / 展开队列',
+        onclick: () => {
+            const collapsed = document.body.classList.toggle('queue-collapsed');
+            document.querySelectorAll('.queue-toggle').forEach(b => {
+                b.setAttribute('aria-label', collapsed ? '展开队列' : '收起队列');
+            });
+        },
+    }, icon('chevron', 14));
+
     const queue = el('aside', { class: 'queue' },
         el('div', { class: 'queue-head' },
-            el('span', { class: 'side-title' }, '接下来'),
+            el('div', { class: 'queue-title-wrap' },
+                el('span', { class: 'side-title' }, '播放队列'),
+                el('span', { class: 'queue-count', id: 'queueCount' })),
             el('div', { class: 'queue-tools' },
-                el('button', {
-                    class: 'icon-btn queue-refresh', style: { width: '28px', height: '28px' },
-                    'aria-label': '重新随机',
-                    title: '重新随机',
-                    onclick: () => { app.feed?.reset(); renderQueue(); },
-                }, icon('refresh', 14)),
-                el('button', {
-                    class: 'icon-btn queue-toggle', style: { width: '28px', height: '28px' },
-                    'aria-label': '收起队列', title: '收起 / 展开队列',
-                    onclick: () => {
-                        const collapsed = document.body.classList.toggle('queue-collapsed');
-                        document.querySelectorAll('.queue-toggle').forEach(b => {
-                            b.setAttribute('aria-label', collapsed ? '展开队列' : '收起队列');
-                        });
-                    },
-                }, icon('chevron', 14)))));
+                shuffleBtn, modeBtn, clearBtn, refreshBtn, toggleBtn)));
     queue.append(queueBody);
 
     /* ---- 底部标签栏 ---- */
@@ -170,9 +197,16 @@ function buildShell() {
         el('div', { class: 'side-mask', onclick: () => root.classList.remove('side-open') }));
 
     /* ---- 初始化子模块 ---- */
-    app.feed = new VideoFeed(feedView, { onOpenDetail: renderQueue });
+    app.queue = new PlayQueue();
+    app.queue.onChange(() => renderQueue());
+    app.feed = new VideoFeed(feedView, { onOpenDetail: renderQueue, queue: app.queue });
     app.grid = new MediaGrid(libraryView, {
-        onPlay: m => { switchView('feed'); app.feed.jumpTo(m.id); renderQueue(); },
+        onPlay: m => {
+            switchView('feed');
+            // 队列里有的沿队列跳（切目录自然序），没有的普通跳转并按其目录生成队列
+            app.feed.jumpToQueue(m.id);
+            renderQueue();
+        },
         onJump: m => openImageViewer(m),
     });
     app.srcMgr = new SourceManager(sourcesView, {
@@ -181,6 +215,9 @@ function buildShell() {
     app.srcMgr.load();
     app.libMode = 'all';
     setLibMode('all');
+
+    // 调试 / 自动化测试钩子：只读暴露应用实例，方便在控制台里查状态
+    window.__wsua = app;
 }
 
 function navBtn(view, label, ico) {
@@ -346,57 +383,111 @@ function sourceRow(s, isActive) {
 /* ============================================================
    队列
    ============================================================ */
+
+/** 同步队列面板工具按钮的状态（随机/循环/清空/计数）。 */
+function syncQueueTools() {
+    const q = app.queue;
+    if (!q) return;
+    const sh = $('#queueShuffle'), md = $('#queueMode'),
+          cl = $('#queueClear'), ct = $('#queueCount');
+    if (sh) {
+        sh.classList.toggle('on', q.shuffle);
+        sh.title = q.shuffle ? '随机播放：开' : '随机播放：关';
+        sh.setAttribute('aria-pressed', q.shuffle ? 'true' : 'false');
+    }
+    if (md) {
+        md.classList.toggle('on', q.mode !== 'off');
+        md.title = q.mode === 'off' ? '循环：关'
+            : q.mode === 'all' ? '循环：整表' : '循环：单集';
+    }
+    if (cl) cl.disabled = !q.size;
+    if (ct) ct.textContent = q.size ? String(q.size) : '';
+}
+
+/** 队列为空时的占位（区分「待命」与「已关闭」两种状态）。 */
+function queueEmpty(q) {
+    if (!q) {
+        return el('div', { class: 'queue-empty' },
+            el('div', { class: 'queue-empty-title' }, '队列未初始化'));
+    }
+    const enabled = q.enabled;
+    const box = el('div', { class: 'queue-empty' },
+        el('div', { class: 'queue-empty-icon' }, icon('stack', 22)),
+        el('div', { class: 'queue-empty-title' }, enabled ? '连播队列已待命' : '连播已关闭'),
+        el('div', { class: 'queue-empty-desc' },
+            enabled
+                ? '播放任意视频，将按所在目录的顺序自动生成下一集'
+                : '清空队列后连播已关闭，可手动重新开启'));
+    if (enabled) {
+        box.append(el('button', {
+            class: 'btn btn-ghost btn-sm', style: { marginTop: '10px' },
+            onclick: () => { app.queue.clear(); renderQueue(); },
+        }, '暂时关闭连播'));
+    } else {
+        box.append(el('button', {
+            class: 'btn btn-ghost btn-sm', style: { marginTop: '10px' },
+            onclick: async () => {
+                const item = app.feed?.items[app.feed.currentIndex];
+                app.queue.setEnabled(true);
+                if (item) await app.queue.ensureFor(item);
+                renderQueue();
+                showToast('连播已开启', 'ok');
+            },
+        }, '按当前视频开启'));
+    }
+    return box;
+}
+
 function renderQueue() {
     const host = $('#queueList');
     if (!host || !app.feed) return;
-    const items = app.feed.items;
+    const q = app.queue;
     host.innerHTML = '';
+    syncQueueTools();
 
-    if (!items.length) {
-        host.append(el('div', {
-            style: { padding: '20px 12px', fontSize: '12px', color: 'var(--fg-3)', textAlign: 'center' },
-        }, '播放列表为空'));
+    if (!q || !q.size) {
+        host.append(queueEmpty(q));
         return;
     }
 
-    const start = Math.max(0, app.feed.currentIndex);
-    items.forEach((m, i) => {
-        const isCur = i === app.feed.currentIndex;
+    q.ids.forEach((id, i) => {
+        const m = q.get(id);
+        if (!m) return;   // 元数据缺失：服务端解析时已剔除，正常不该出现
+        const isCur = i === q.index;
+
         const thumb = el('div', { class: 'q-thumb' });
-        if (m.kind === 'image') {
-            thumb.append(el('img', { src: m.stream, loading: 'lazy', alt: '' }));
-        } else if (m.poster) {
-            thumb.append(el('div', { class: 'thumb-ph' },
-                icon('film', 16)));
-            const pimg = el('img', { src: m.poster, alt: '' });
+        if (m.poster) {
+            thumb.append(el('div', { class: 'thumb-ph' }, icon('film', 16)));
+            const pimg = el('img', { src: m.poster, alt: '', draggable: 'false' });
             pimg.addEventListener('load', () => { thumb.innerHTML = ''; thumb.append(pimg); });
             pimg.addEventListener('error', () => {
                 pimg.remove();
                 getThumbnail(m.id, m.stream).then(url => {
                     if (!url || !thumb.isConnected) return;
                     thumb.innerHTML = '';
-                    thumb.append(el('img', { src: url, alt: '' }));
+                    thumb.append(el('img', { src: url, alt: '', draggable: 'false' }));
                 });
             });
             thumb.append(pimg);
         } else {
-            thumb.append(el('div', { class: 'thumb-ph' },
-                icon(m.kind === 'audio' ? 'music' : 'film', 16)));
+            thumb.append(el('div', { class: 'thumb-ph' }, icon('film', 16)));
             getThumbnail(m.id, m.stream).then(url => {
                 if (!url || !thumb.isConnected) return;
                 thumb.innerHTML = '';
-                thumb.append(el('img', { src: url, alt: '' }));
+                thumb.append(el('img', { src: url, alt: '', draggable: 'false' }));
             });
         }
         if (m.duration) thumb.append(el('span', { class: 'dur' }, formatTime(m.duration)));
 
         const node = el('div', {
             class: `q-item ${isCur ? 'playing' : ''}`,
-            onclick: () => {
-                const node2 = app.feed.slides.get(m.id)?.node;
-                if (node2) node2.scrollIntoView({ behavior: 'smooth', block: 'start' });
-            },
-        }, thumb,
+            draggable: 'true',
+            dataset: { index: String(i) },
+            onclick: () => { app.feed.jumpToQueue(m.id); },
+        },
+            el('span', { class: 'q-grip', 'aria-hidden': 'true' }, icon('more', 14)),
+            el('span', { class: `q-pos ${isCur ? 'on' : ''}` }, String(i + 1)),
+            thumb,
             el('div', { class: 'q-info' },
                 el('div', { class: 'q-title' }, m.name),
                 el('div', { class: 'q-meta' }, `${m.source_name || ''} · ${formatSize(m.size)}`)),
@@ -409,27 +500,50 @@ function renderQueue() {
                     await toggleFav(m, e.currentTarget);
                     renderQueue();
                 },
-            }, heartSvg(m.is_fav)));
+            }, heartSvg(m.is_fav)),
+            el('button', {
+                class: 'q-remove', 'aria-label': '从队列移除', title: '从队列移除',
+                onclick: e => {
+                    e.stopPropagation();
+                    q.remove(m.id);
+                    renderQueue();
+                },
+            }, icon('x', 12)));
+
+        // 拖拽排序（队列面板只在桌面端可见，移动端不涉及触摸拖拽）
+        node.addEventListener('dragstart', e => {
+            e.dataTransfer.setData('text/plain', String(i));
+            e.dataTransfer.effectAllowed = 'move';
+            node.classList.add('q-dragging');
+        });
+        node.addEventListener('dragover', e => {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+            if (!node.classList.contains('q-dragging')) node.classList.add('q-drop');
+        });
+        node.addEventListener('dragleave', () => node.classList.remove('q-drop'));
+        node.addEventListener('drop', e => {
+            e.preventDefault();
+            node.classList.remove('q-drop');
+            const from = Number(e.dataTransfer.getData('text/plain'));
+            if (Number.isNaN(from)) return;
+            // 「先移除再按下标插入」对向上/向下拖都给出符合视觉的结果
+            q.move(from, i);
+            renderQueue();
+        });
+        node.addEventListener('dragend', () => {
+            node.classList.remove('q-dragging');
+            host.querySelectorAll('.q-drop').forEach(n => n.classList.remove('q-drop'));
+        });
         host.append(node);
     });
 
-    // 底部：分页状态（加载更多 / 已加载全部）
-    const feed = app.feed;
-    if (feed.exhausted) {
-        host.append(el('div', { class: 'queue-foot' },
-            `已加载全部 ${feed.total} 个文件`));
-    } else {
-        const btn = el('button', {
-            class: 'queue-foot queue-more',
-            disabled: feed.loading,
-            onclick: async () => {
-                await feed.loadMore();   // 完成后回调 renderQueue
-            },
-        },
-            feed.loading ? el('span', { class: 'btn-spinner' }) : icon('chevron', 12),
-            feed.loading ? '加载中…' : `加载更多（还有 ${Math.max(0, feed.total - feed.items.length)} 个）`);
-        host.append(btn);
-    }
+    // 底部：队列来源 + 规模 + 模式
+    const modeText = q.mode === 'off' ? '播完停止'
+        : q.mode === 'all' ? '整表循环' : '单集循环';
+    host.append(el('div', { class: 'queue-foot' },
+        `${q.origin && q.origin !== '/' ? q.origin : '根目录'} · ${q.size} 个文件 · `
+        + `${modeText}${q.shuffle ? ' · 随机' : ''}`));
 
     // 当前播放的滚到可见
     const cur = host.querySelector('.q-item.playing');
@@ -484,7 +598,7 @@ function openSettings() {
         mkSwitch('autoPlay', '自动播放', '滚动到某个视频时自动开始播放'),
         mkSwitch('debugLog', '播放器调试日志', '在播放器「更多」菜单里提供调试日志开关'),
         el('div', { class: 'settings-sep' }),
-        mkPageSelect('pageFeed', '视频流每页条数', '同时决定右侧「接下来」队列的每页条数', [12, 24, 48, 96]),
+        mkPageSelect('pageFeed', '视频流每页条数', '视频流滚动到底时每次加载的条数', [12, 24, 48, 96]),
         mkPageSelect('pageLibrary', '媒体库每页条数', '媒体库网格滚动到底每次加载的条数', [24, 48, 96, 192]));
 
     openModal({
