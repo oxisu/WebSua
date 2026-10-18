@@ -261,7 +261,7 @@ def scan_source(source_id: int, task_id: int, mode: str = "full",
             _tasks[task_id]["error"] = "数据源不存在"
         return
 
-    if mode not in ("full", "incremental"):
+    if mode not in ("full", "incremental", "failed"):
         mode = "full"
     with _tasks_lock:
         _tasks[task_id]["state"] = "running"
@@ -273,7 +273,8 @@ def scan_source(source_id: int, task_id: int, mode: str = "full",
     root = src.get("root_path") or "/"
     exclude = {x.strip() for x in (src.get("exclude_dirs") or "").replace("，", ",").split(",") if x.strip()}
     exclude_key = ",".join(sorted(exclude))
-    incremental = (mode == "incremental")
+    incremental = (mode in ("incremental", "failed"))
+    partial = (mode == "failed")   # 只重扫失败目录：只增改，绝不删其余条目
 
     # ---- 断点恢复：参数对得上才续，否则当作过期进度丢掉重扫 ----
     stack: list | None = None
@@ -290,12 +291,29 @@ def scan_source(source_id: int, task_id: int, mode: str = "full",
             resumed = True
             # 沿用旧断点的扫描模式：增量与否要在收尾提交时才知道，
             # 不能因为这次 start_scan 传了 full 就把增量语义改掉
-            if state.get("mode") in ("full", "incremental"):
+            if state.get("mode") in ("full", "incremental", "failed"):
                 mode = state["mode"]
-                incremental = (mode == "incremental")
+                incremental = (mode in ("incremental", "failed"))
+                partial = (mode == "failed")
         elif state:
             db.clear_scan_state(source_id)   # 根目录/排除项/深度变了，旧进度作废
             scan_log("info", source_id, "扫描参数已变化，放弃旧断点重新扫描")
+
+    # ---- 失败目录重扫：从上一轮记录的失败目录开始，不碰 scan_state 断点 ----
+    if mode == "failed" and not resumed:
+        failed = db.get_failed_dirs(source_id)
+        if not failed:
+            # 没有失败目录还硬要重扫，回退成全量，避免空跑
+            scan_log("warn", source_id, "没有需要重扫的失败目录，回退为全量扫描")
+            mode = "full"
+            incremental = False
+            partial = False
+        else:
+            stack = [(WebDAVClient._norm(f["folder"]), 0) for f in failed]
+            visited = []
+            scan_log("info", source_id,
+                     f"失败目录重扫：从 {len(failed)} 个失败目录开始遍历")
+
     if not resumed:
         db.stage_clear(source_id)            # 全新一轮：清掉上一轮的暂存条目
     with _tasks_lock:
@@ -305,10 +323,12 @@ def scan_source(source_id: int, task_id: int, mode: str = "full",
 
     # 最新遍历现场（on_state 每次更新）—— 取消时靠它落盘，
     # 还没走到第一个目录时至少也有「从根再来」的合理初值
-    latest = {"stack": stack if resumed else [(WebDAVClient._norm(root), 0)],
+    latest = {"stack": stack if stack is not None else [(WebDAVClient._norm(root), 0)],
               "visited": visited}
 
-    tag = "续扫" if resumed else ("增量扫描" if incremental else "扫描")
+    tag = ("续扫" if resumed else
+           "失败目录重扫" if mode == "failed" else
+           "增量扫描" if incremental else "扫描")
     scan_log("info", source_id,
              f"开始{tag} root={root} depth={SCAN_MAX_DEPTH}"
              + (f" 排除目录={exclude_key}" if exclude_key else "")
@@ -455,15 +475,22 @@ def scan_source(source_id: int, task_id: int, mode: str = "full",
             items = _match_posters(items)
         # 字幕：同名 .srt / .vtt 关联到视频/音频（附属品，不单独入媒体库）
         items = _match_subtitles(items)
-        added, updated, removed, unchanged = db.bulk_upsert_media(
-            source_id, items, incremental=incremental)
+        added, updated, removed, unchanged, missing = db.bulk_upsert_media(
+            source_id, items, incremental=incremental, partial=partial)
         elapsed = int((time.time() - t0) * 1000)
+        # 失败目录重扫是「只增改」的局部提交：媒体总数要以库现状为准，
+        # 不能只数这一轮提交的几项（那样会越扫越少）
+        total = (db.count_media_by_source(source_id)
+                 if partial else added + updated + unchanged)
         db.update_source(source_id, {
             "last_scan_at": int(time.time()), "last_scan_ms": elapsed,
-            "last_error": "", "item_count": added + updated + unchanged,
+            "last_error": "", "item_count": total,
         })
+        # 持久化失败目录 + 差异报告（原子刷新，空列表即清空）
+        db.save_failed_dirs(source_id, failed_dirs, mode)
+        db.save_scan_diff(source_id, mode, added, updated, removed, unchanged,
+                          missing if not partial else [])
         db.clear_scan_state(source_id)
-        total = added + updated + unchanged
         scan_log("info", source_id,
                  f"扫描完成（{tag}） 文件={len(items)} 新增={added} 更新={updated} "
                  f"未变={unchanged} 移除={removed} 耗时={elapsed}ms")
@@ -517,7 +544,7 @@ def start_scan(source_id: int, mode: str = "full", resume: bool = False,
     running = active_task_for(source_id)
     if running:
         return running
-    if mode not in ("full", "incremental"):
+    if mode not in ("full", "incremental", "failed"):
         mode = "full"
     task = create_task(source_id, kind=mode)
     if async_:

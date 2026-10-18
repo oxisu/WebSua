@@ -115,6 +115,33 @@ CREATE TABLE IF NOT EXISTS scan_state (
     started_at    INTEGER NOT NULL,
     updated_at    INTEGER NOT NULL
 );
+
+-- 失败目录：每次扫描完成（done）时原子刷新。宁可暴露也绝不静默丢弃。
+-- folder 是规范化后的目录路径（含开头斜杠，无结尾斜杠）。
+-- 扫描中途某目录列举失败，整个子树的文件都会消失 —— 这些目录必须可被
+-- 观测、可被「只重扫失败目录」复用，而不是只躺在日志文本里。
+CREATE TABLE IF NOT EXISTS scan_failed (
+    source_id   INTEGER NOT NULL,
+    folder      TEXT NOT NULL,
+    error       TEXT,
+    scan_mode   TEXT,
+    created_at  INTEGER NOT NULL,
+    PRIMARY KEY (source_id, folder)
+);
+
+-- 扫描差异报告：每次「完成的扫描」写一行，记录相对库现状的增/改/删/未变，
+-- 以及被远端删除的具体路径（missing），让「消失的媒体」可观测、可追溯。
+CREATE TABLE IF NOT EXISTS scan_diff (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_id   INTEGER NOT NULL,
+    mode        TEXT,
+    added       INTEGER DEFAULT 0,
+    updated     INTEGER DEFAULT 0,
+    removed     INTEGER DEFAULT 0,
+    unchanged   INTEGER DEFAULT 0,
+    missing     TEXT DEFAULT '',
+    created_at  INTEGER NOT NULL
+);
 """
 
 
@@ -220,13 +247,89 @@ def delete_source(source_id: int) -> bool:
     with _lock:
         conn = get_conn()
         conn.execute("DELETE FROM media WHERE source_id = ?", (source_id,))
-        # 扫描暂存表 / 断点没有外键级联，手动清掉，否则删源后留下一具
-        # 「可继续扫描」的僵尸进度，指向已经不存在的源
+        # 扫描暂存表 / 断点 / 失败目录 / 差异报告没有外键级联，手动清掉，
+        # 否则删源后留下一具「可继续扫描」的僵尸进度，指向已经不存在的源
         conn.execute("DELETE FROM scan_stage WHERE source_id = ?", (source_id,))
         conn.execute("DELETE FROM scan_state WHERE source_id = ?", (source_id,))
+        conn.execute("DELETE FROM scan_failed WHERE source_id = ?", (source_id,))
+        conn.execute("DELETE FROM scan_diff WHERE source_id = ?", (source_id,))
         cur = conn.execute("DELETE FROM sources WHERE id = ?", (source_id,))
         conn.commit()
     return cur.rowcount > 0
+
+
+# ---------------- 失败目录 / 扫描差异报告 ----------------
+
+def clear_failed_dirs(source_id: int) -> None:
+    with _lock:
+        get_conn().execute("DELETE FROM scan_failed WHERE source_id = ?", (source_id,))
+        get_conn().commit()
+
+
+def save_failed_dirs(source_id: int, entries: list[tuple[str, str]],
+                      mode: str = "") -> None:
+    """原子刷新某源的失败目录：先清空再写入本轮结果。
+
+    entries: [(folder, error), ...]（folder 为规范化路径）。
+    空列表表示本轮没有失败目录 —— 表随之清空，「重扫失败目录」按钮与
+    失败徽标自然消失。
+    """
+    now = int(time.time())
+    with _lock:
+        conn = get_conn()
+        conn.execute("DELETE FROM scan_failed WHERE source_id = ?", (source_id,))
+        if entries:
+            conn.executemany(
+                "INSERT INTO scan_failed "
+                "(source_id, folder, error, scan_mode, created_at) VALUES (?,?,?,?,?)",
+                [(source_id, f, e, mode, now) for f, e in entries],
+            )
+        conn.commit()
+
+
+def get_failed_dirs(source_id: int) -> list[dict[str, Any]]:
+    with _lock:
+        rows = get_conn().execute(
+            "SELECT folder, error, scan_mode, created_at FROM scan_failed "
+            "WHERE source_id = ? ORDER BY folder", (source_id,)).fetchall()
+    return rows_to_dicts(rows)
+
+
+def save_scan_diff(source_id: int, mode: str, added: int, updated: int,
+                   removed: int, unchanged: int,
+                   missing: list[str] | None = None) -> None:
+    """记录一次完成的扫描与库现状的差异（新增/更新/消失/未变/消失路径）。"""
+    now = int(time.time())
+    with _lock:
+        get_conn().execute(
+            "INSERT INTO scan_diff "
+            "(source_id, mode, added, updated, removed, unchanged, missing, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (source_id, mode, added, updated, removed, unchanged,
+             json.dumps(missing or [], ensure_ascii=False), now))
+        get_conn().commit()
+
+
+def get_last_diff(source_id: int) -> dict[str, Any] | None:
+    with _lock:
+        row = get_conn().execute(
+            "SELECT * FROM scan_diff WHERE source_id = ? ORDER BY id DESC LIMIT 1",
+            (source_id,)).fetchone()
+    if not row:
+        return None
+    d = dict(row)
+    try:
+        d["missing"] = json.loads(d["missing"] or "[]")
+    except (json.JSONDecodeError, TypeError, ValueError):
+        d["missing"] = []
+    return d
+
+
+def count_media_by_source(source_id: int) -> int:
+    with _lock:
+        return get_conn().execute(
+            "SELECT COUNT(*) c FROM media WHERE source_id = ?", (source_id,)
+        ).fetchone()["c"]
 
 
 # ---------------- media ----------------
@@ -245,8 +348,11 @@ def _same_signature(old: sqlite3.Row, it: dict[str, Any]) -> bool:
 
 
 def bulk_upsert_media(source_id: int, items: list[dict[str, Any]],
-                      incremental: bool = False) -> tuple[int, int, int, int]:
-    """写入/更新媒体条目。返回 (新增数, 更新数, 清理数, 未变数)。
+                      incremental: bool = False,
+                      partial: bool = False) -> tuple[int, int, int, int, list[str]]:
+    """写入/更新媒体条目。
+
+    返回 (新增数, 更新数, 清理数, 未变数, 被移除的路径列表)。
 
     注意：远端 PROPFIND 可能返回重复条目（123 云盘等网盘出现过），
     items 内同 remote_path 出现两次时，若不做防重，第二次 INSERT 会
@@ -256,6 +362,10 @@ def bulk_upsert_media(source_id: int, items: list[dict[str, Any]],
     完全一致的条目直接跳过 —— 不写库、不刷新 indexed_at。否则每次重扫
     都会把全表 indexed_at 刷成「刚刚」，视频流的「最新」排序失去意义，
     纯属写放大。
+
+    partial=True（只重扫失败目录）：只新增/更新本轮 items，绝不删除库中
+    其余条目 —— 否则「只扫失败目录」会把正常目录里已有的媒体全部判为
+    「消失」而删掉。被移除路径恒为空列表。
     """
     now = int(time.time())
     with _lock:
@@ -301,12 +411,18 @@ def bulk_upsert_media(source_id: int, items: list[dict[str, Any]],
                      it.get("height"), now),
                 )
                 added += 1
-        gone = [row["id"] for rp, row in existing.items() if rp not in seen]
-        for i in range(0, len(gone), 400):
-            chunk = gone[i:i + 400]
-            conn.execute(f"DELETE FROM media WHERE id IN ({','.join('?' * len(chunk))})", chunk)
+        gone = [row for rp, row in existing.items() if rp not in seen]
+        removed_paths = [row["remote_path"] for row in gone]
+        removed = 0
+        if not partial:
+            removed = len(gone)
+            for i in range(0, len(gone), 400):
+                chunk = gone[i:i + 400]
+                conn.execute(
+                    f"DELETE FROM media WHERE id IN ({','.join('?' * len(chunk))})",
+                    [row["id"] for row in chunk])
         conn.commit()
-    return added, updated, len(gone), unchanged
+    return added, updated, removed, unchanged, removed_paths
 
 
 # ---------------- 增量扫描 / 断点续扫 ----------------
@@ -400,7 +516,7 @@ def save_scan_state(source_id: int, root: str, max_depth: int, exclude: str,
                  stack=excluded.stack, visited=excluded.visited,
                  updated_at=excluded.updated_at""",
             (source_id, root, int(max_depth), exclude or "",
-             mode if mode in ("full", "incremental") else "full",
+             mode if mode in ("full", "incremental", "failed") else "full",
              json.dumps([list(x) for x in stack], ensure_ascii=False),
              json.dumps(list(visited), ensure_ascii=False),
              now, now),

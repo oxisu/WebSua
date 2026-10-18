@@ -315,6 +315,9 @@ def api_list_sources(c: Ctx) -> None:
         d["scan_running"] = scanner.active_task_for(s["id"]) is not None
         # 有断点 = 上次取消/中断的扫描可以继续（前端显示「继续扫描」）
         d["resumable"] = db.has_resumable_scan(s["id"])
+        # 失败目录 + 最近一次扫描差异报告（可观测，不静默丢弃）
+        d["failed_dirs"] = db.get_failed_dirs(s["id"])
+        d["last_diff"] = db.get_last_diff(s["id"])
         out.append(d)
     c.ok(sources=out)
 
@@ -380,8 +383,8 @@ def api_scan_source(c: Ctx) -> None:
     d = c.json() if c.body else {}
     mode = str(d.get("mode") or c.q("mode", "") or "full")
     resume = bool(d.get("resume")) or c.q("resume", "") in ("1", "true")
-    if mode not in ("full", "incremental"):
-        c.fail("mode 只支持 full / incremental", 400)
+    if mode not in ("full", "incremental", "failed"):
+        c.fail("mode 只支持 full / incremental / failed", 400)
         return
     task = scanner.start_scan(sid, mode=mode, resume=resume)
     c.ok(task=task)
