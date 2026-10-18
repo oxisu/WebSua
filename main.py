@@ -6,8 +6,10 @@
     python main.py              # 启动服务（不自动开浏览器）
     python main.py --browser    # 启动并自动打开浏览器
     python main.py --port 9000  # 指定端口
-    python main.py --host 0.0.0.0   # 允许局域网访问
     python main.py --scan           # 启动后立即全量扫描所有启用的数据源
+
+    # 允许局域网访问（**必须**同时设置访问密码，否则拒绝启动）
+    python main.py --host 0.0.0.0 --password 你的密码
 
 仅依赖 Python 标准库，无需 pip install。
 """
@@ -27,7 +29,7 @@ if sys.version_info < (3, 9):
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from backend import db, scanner            # noqa: E402
+from backend import auth, db, scanner      # noqa: E402
 from backend.server import serve          # noqa: E402
 
 BANNER = r"""
@@ -68,6 +70,8 @@ def main() -> int:
     ap.add_argument("--port", type=int, default=8770, help="端口（被占用时自动顺延）")
     ap.add_argument("--browser", action="store_true", help="启动后自动打开浏览器")
     ap.add_argument("--scan", action="store_true", help="启动后立即扫描所有数据源")
+    ap.add_argument("--password", default=os.environ.get("WEBSUA_ACCESS_PASSWORD", ""),
+                    help="设置访问密码（非本机访问时必填）")
     args = ap.parse_args()
 
     # 允许双击运行时从任意目录启动
@@ -82,12 +86,22 @@ def main() -> int:
     if port != args.port:
         print(f"  端口 {args.port} 被占用，改用 {port}\n")
 
-    httpd = serve(args.host, port)
+    # 命令行 / 环境变量给了密码就（重新）设置一次 —— 也是改密码的入口
+    if args.password:
+        auth.set_password(args.password)
+        print("  已设置访问密码（局域网设备首次访问需要输入）\n")
+
+    try:
+        httpd = serve(args.host, port)
+    except RuntimeError as e:
+        print(f"\n  ✗ {e}\n")
+        return 2
 
     url = f"http://127.0.0.1:{port}"
     print(f"  ▶ 打开 {url}")
     if args.host == "0.0.0.0":
-        print(f"  ▶ 局域网访问 http://{lan_ip()}:{port}")
+        print(f"  ▶ 局域网访问 http://{lan_ip()}:{port}"
+              f"（需先用访问密码登录）")
     print("  ▶ 按 Ctrl+C 退出\n")
 
     if args.scan:

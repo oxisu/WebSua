@@ -14,7 +14,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable
 
-from . import db, scanner
+from . import db, scanner, auth
 from .config import FRONTEND_DIR
 from .stream import WebDAVError, guess_mime, iter_chunks, open_media_stream, parse_range
 from .webdav import WebDAVClient, make_client
@@ -74,12 +74,16 @@ class Ctx:
         except (json.JSONDecodeError, UnicodeDecodeError):
             return {}
 
-    def send_json(self, data: Any, status: int = 200) -> None:
+    def send_json(self, data: Any, status: int = 200,
+                  extra: dict[str, str] | None = None) -> None:
         payload = json.dumps(data, ensure_ascii=False, default=str).encode("utf-8")
         self.h.send_response(status)
         self.h.send_header("Content-Type", "application/json; charset=utf-8")
         self.h.send_header("Content-Length", str(len(payload)))
         self.h.send_header("Cache-Control", "no-store")
+        for k, v in (extra or {}).items():
+            if v:
+                self.h.send_header(k, v)
         self.h.end_headers()
         if self.h.command != "HEAD":
             self.h.wfile.write(payload)
@@ -113,6 +117,15 @@ class AppHandler(BaseHTTPRequestHandler):
         if os.environ.get("WEBSUA_VERBOSE"):
             print(f"[http] {self.address_string()} {fmt % args}")
 
+    def _auth_ok(self, ctx: Ctx) -> bool:
+        """门禁校验。未设密码时不做限制（本机默认用法不该被挡）。"""
+        if not auth.has_password():
+            return True
+        if auth.check_token(token_of(ctx)):
+            return True
+        ctx.send_json({"ok": False, "error": "需要访问密码", "auth_required": True}, 401)
+        return False
+
     def _safe_fail(self, ctx: Ctx, msg: str, status: int) -> None:
         """发错误响应；客户端已断开时写响应会再抛 OSError，静默。"""
         try:
@@ -135,6 +148,12 @@ class AppHandler(BaseHTTPRequestHandler):
             body = self.rfile.read(length) if length else b""
             ctx = Ctx(self, method, path, query, m.groupdict(), body,
                       self.client_address[0])
+            # 统一门禁：/api/* 一律要过鉴权（媒体流 / 封面 / 字幕同样在内），
+            # 只放行登录接口本身、门禁状态查询与健康检查。
+            # 静态资源照常下发 —— 登录界面本身就在 SPA 里，拦了就没法输密码。
+            if path.startswith("/api/") and path not in AUTH_FREE_PATHS:
+                if not self._auth_ok(ctx):
+                    return
             try:
                 route.handler(ctx)
             except WebDAVError as e:
@@ -270,6 +289,96 @@ def route(method: str, pattern: str) -> Callable:
         AppHandler.routes.append(Route(method, pattern, fn))
         return fn
     return deco
+
+
+# 门禁放行的路径：登录接口自己、门禁状态查询、健康检查。
+# 健康检查放行是为了局域网里的探活脚本不被门禁干扰。
+AUTH_FREE_PATHS = ("/api/auth/login", "/api/auth/status", "/api/health")
+# 当前监听地址（serve() 写入），用于「非本机绑定禁止关闭门禁」等判断
+BIND_HOST = "127.0.0.1"
+
+
+def token_of(c: Ctx) -> str:
+    """从请求里取访问令牌：Cookie → Authorization: Bearer → ?token=。
+
+    Cookie 让浏览器对 <video>/<img> 的媒体请求自动带上凭据（不必改 URL）；
+    ?token= 是给 VLC 这类没法带请求头的外部播放器留的口子。
+    """
+    tok = auth.token_from_cookie(c.h.headers.get("Cookie", ""))
+    if not tok:
+        hdr = c.h.headers.get("Authorization", "")
+        if hdr.lower().startswith("bearer "):
+            tok = hdr[7:].strip()
+    if not tok:
+        tok = c.q("token", "")
+    return tok
+
+
+# ---------- 访问门禁 ----------
+
+@route("GET", r"/api/auth/status")
+def api_auth_status(c: Ctx) -> None:
+    """门禁状态。前端据此决定要不要弹登录框。"""
+    # 注意别用 ok 当字段名：外层信封本身就有 ok，会被覆盖导致语义混乱
+    required = auth.has_password()
+    c.ok(required=required,
+         authed=(not required) or auth.check_token(token_of(c)),
+         ttl=auth.ACCESS_TOKEN_TTL)
+
+
+@route("POST", r"/api/auth/login")
+def api_auth_login(c: Ctx) -> None:
+    """用访问密码换令牌（同时下发 Cookie）。"""
+    if not auth.has_password():
+        c.ok(required=False, ok=True)
+        return
+    src = c.client_ip
+    wait = auth.locked_out(src)
+    if wait > 0:
+        c.fail(f"登录失败次数过多，请 {wait} 秒后再试", 429)
+        return
+    d = c.json()
+    if not auth.verify_password(str(d.get("password") or "")):
+        left = auth.note_fail(src)
+        scanner.scan_log("warn", 0,
+                         f"访问密码校验失败 src={src}"
+                         + (f"（锁定 {left}s）" if left else "（未达阈值）"))
+        c.fail("密码不正确", 401, auth_required=True)
+        return
+    auth.note_success(src)
+    tok = auth.issue_token()
+    scanner.scan_log("info", 0, f"访问门禁登录成功 src={src}")
+    # 同时回传 token：外部播放器 / 脚本可以直接用 ?token= 或 Bearer 访问
+    c.send_json({"ok": True, "token": tok, "ttl": auth.ACCESS_TOKEN_TTL},
+                extra={"Set-Cookie": auth.cookie_header(tok)})
+
+
+@route("POST", r"/api/auth/logout")
+def api_auth_logout(c: Ctx) -> None:
+    """退出登录：吊销当前令牌并清 Cookie。"""
+    auth.revoke_token(token_of(c))
+    c.send_json({"ok": True}, extra={"Set-Cookie": auth.cookie_header("", 0)})
+
+
+@route("POST", r"/api/auth/password")
+def api_auth_password(c: Ctx) -> None:
+    """设置 / 修改 / 关闭访问密码。
+
+    已开启门禁时必须登录才能改（否则谁都能改）；还没设过密码时允许首次设置，
+    不然永远登不进去。局域网绑定下不允许关闭门禁。
+    """
+    if auth.has_password() and not auth.check_token(token_of(c)):
+        c.fail("需要访问密码", 401, auth_required=True)
+        return
+    d = c.json()
+    pw = str(d.get("password") or "")
+    if not pw and not auth.is_loopback(BIND_HOST):
+        c.fail("局域网访问下不允许关闭访问密码", 400)
+        return
+    auth.set_password(pw)
+    scanner.scan_log("info", 0,
+                     "访问密码已设置" if pw else "访问密码已关闭（仅本机访问）")
+    c.ok(enabled=auth.has_password())
 
 
 # ---------- 系统 ----------
@@ -955,6 +1064,19 @@ class ThreadedServer(ThreadingHTTPServer):
 
 
 def serve(host: str = "127.0.0.1", port: int = 8770) -> ThreadedServer:
+    """启动服务。非本机绑定时**强制**要求已设置访问密码。
+
+    局域网 = 同一个 Wi-Fi 下任何人都能访问，没有门禁等于把整个媒体库和
+    WebDAV 凭据暴露出去。这里直接拒绝启动，而不是「警告后裸奔」。
+    """
+    global BIND_HOST
+    BIND_HOST = host
+    if not auth.is_loopback(host) and not auth.has_password():
+        raise RuntimeError(
+            f"监听地址 {host} 会暴露到局域网，必须先设置访问密码。\n"
+            "  方式一：python main.py --host 0.0.0.0 --password 你的密码\n"
+            "  方式二：设置环境变量 WEBSUA_ACCESS_PASSWORD 后启动\n"
+            "  仅本机使用时请用默认 --host 127.0.0.1（不需要密码）")
     httpd = ThreadedServer((host, port), AppHandler)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     scanner.start_auto_scans()

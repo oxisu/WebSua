@@ -84,3 +84,13 @@ SCAN_STATE_SAVE_EVERY_SECS = float(os.environ.get("WEBSUA_SCAN_STATE_SECS", "30"
 # 扫描日志文件
 SCAN_LOG_PATH = DATA_DIR / "scan.log"
 SCAN_LOG_MAX_BYTES = 512 * 1024  # 超过则轮转
+
+# ---- 访问门禁（局域网密码 / 令牌）----
+# 登录签发的 token 有效期（秒）。默认 30 天：家用场景不该天天重新登录，
+# 但也不能做成永不过期（丢了设备没法吊销）。
+ACCESS_TOKEN_TTL = int(os.environ.get("WEBSUA_TOKEN_TTL", str(30 * 24 * 3600)))
+# 密码哈希的 pbkdf2 迭代次数（越高越抗暴力，代价是登录时多几十毫秒）
+ACCESS_PBKDF2_ITERS = int(os.environ.get("WEBSUA_PBKDF2_ITERS", "200000"))
+# 登录失败限流：同一来源连续失败这么多次后，锁定这么多秒
+ACCESS_MAX_FAILS = int(os.environ.get("WEBSUA_ACCESS_MAX_FAILS", "5"))
+ACCESS_FAIL_LOCKOUT = int(os.environ.get("WEBSUA_ACCESS_LOCKOUT", "60"))
