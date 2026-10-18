@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS media (
     height        INTEGER,
     folder        TEXT DEFAULT '',
     poster_path   TEXT DEFAULT '',
+    subtitle_path TEXT DEFAULT '',
     content_hash  TEXT,
     indexed_at    INTEGER NOT NULL,
     UNIQUE(source_id, remote_path)
@@ -91,6 +92,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
     if "poster_path" not in cols("media"):
         conn.execute("ALTER TABLE media ADD COLUMN poster_path TEXT DEFAULT ''")
+    if "subtitle_path" not in cols("media"):
+        conn.execute("ALTER TABLE media ADD COLUMN subtitle_path TEXT DEFAULT ''")
     if "tg_mode" not in cols("sources"):
         conn.execute("ALTER TABLE sources ADD COLUMN tg_mode INTEGER DEFAULT 0")
     if "exclude_dirs" not in cols("sources"):
@@ -215,20 +218,22 @@ def bulk_upsert_media(source_id: int, items: list[dict[str, Any]]) -> tuple[int,
             if rp in existing:
                 conn.execute(
                     """UPDATE media SET name=?, ext=?, kind=?, mime=?, size=?, mtime=?,
-                       folder=?, poster_path=?, indexed_at=? WHERE id=?""",
+                       folder=?, poster_path=?, subtitle_path=?, indexed_at=? WHERE id=?""",
                     (it["name"], it.get("ext"), it.get("kind", "video"), it.get("mime"),
                      int(it.get("size") or 0), it.get("mtime"),
-                     it.get("folder", ""), it.get("poster_path", ""), now, existing[rp]),
+                     it.get("folder", ""), it.get("poster_path", ""),
+                     it.get("subtitle_path", ""), now, existing[rp]),
                 )
             else:
                 conn.execute(
                     """INSERT INTO media
                        (source_id, remote_path, name, ext, kind, mime, size, mtime,
-                        folder, poster_path, duration, width, height, indexed_at)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        folder, poster_path, subtitle_path, duration, width, height, indexed_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (source_id, rp, it["name"], it.get("ext"), it.get("kind", "video"),
                      it.get("mime"), int(it.get("size") or 0), it.get("mtime"),
                      it.get("folder", ""), it.get("poster_path", ""),
+                     it.get("subtitle_path", ""),
                      it.get("duration"), it.get("width"),
                      it.get("height"), now),
                 )

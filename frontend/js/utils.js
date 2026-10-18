@@ -234,3 +234,16 @@ export function onIdle(fn) {
     if ('requestIdleCallback' in window) return requestIdleCallback(fn, { timeout: 500 });
     return setTimeout(fn, 1);
 }
+
+/**
+ * SRT → WebVTT 转换（纯前端，零依赖）。
+ *
+ * 只做最小必要处理：补 WEBVTT 头、时间戳逗号改点、小时补足两位。
+ * 不解析样式标签 —— .ass/.ssa 明确不支持，这里也不去模拟。
+ */
+export function srtToVtt(srt) {
+    let text = (srt || '').replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
+    text = text.replace(/(\d{1,2}):(\d{2}:\d{2}),(\d{3})/g,
+        (_m, h, rest, ms) => String(h).padStart(2, '0') + ':' + rest + '.' + ms);
+    return 'WEBVTT\n\n' + text.trim() + '\n';
+}

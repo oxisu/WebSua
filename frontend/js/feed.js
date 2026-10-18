@@ -244,6 +244,7 @@ export class VideoFeed {
             sourceName: item.source_name,
             fallbackUrl: item.fallback,
             poster: item.poster || undefined,
+            subtitle: item.subtitle || undefined,
             autoplay: getSetting('autoPlay'),
             debug: getSetting('debugLog'),
             keyEnabled: true,

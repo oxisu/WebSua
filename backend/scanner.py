@@ -96,6 +96,51 @@ def _match_posters(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return items
 
 
+def _match_subtitles(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """把同目录同名字幕关联到视频/音频上（与 TG 封面匹配同一思路）。
+
+    支持命名：
+      片名.mp4 + 片名.srt        （主规则：同名不同扩展名）
+      片名.mp4 + 片名.mp4.srt    （视频全名 + .srt）
+
+    字幕是附属品：匹配上的从媒体列表剔除，**未匹配的一并剔除**——
+    没有视频的字幕单独显示只是噪音。.ass/.ssa 不在扫描范围内
+    （config.SUBTITLE_KIND_EXTS 只含 .srt/.vtt，前端会提示不支持）。
+    """
+    import os as _os
+
+    SUB_EXTS = {".srt", ".vtt"}
+    # 目录 -> {键: 字幕条目}；键是「视频 stem（去扩展名）」或「视频全名」
+    subs: dict[str, dict[str, dict[str, Any]]] = {}
+    for it in items:
+        if it.get("kind") != "subtitle" or it.get("ext") not in SUB_EXTS:
+            continue
+        bucket = subs.setdefault(it.get("folder", ""), {})
+        stem = _os.path.splitext(it["name"])[0]      # 片名  或  片名.mp4
+        bucket.setdefault(stem, it)
+        inner = _os.path.splitext(stem)[0]
+        if inner and inner != stem:
+            bucket.setdefault(inner, it)             # 片名.mp4.srt -> 键「片名」
+
+    matched = 0
+    for it in items:
+        if it.get("kind") not in ("video", "audio"):
+            continue
+        bucket = subs.get(it.get("folder", ""), {})
+        if not bucket:
+            continue
+        sub = (bucket.get(_os.path.splitext(it["name"])[0])
+               or bucket.get(it["name"]))
+        if sub is not None and id(sub) != id(it):
+            it["subtitle_path"] = sub["remote_path"]
+            matched += 1
+
+    items = [it for it in items if it.get("kind") != "subtitle"]
+    if matched:
+        scan_log("info", 0, f"字幕匹配：{matched} 个视频关联字幕，字幕文件不单独入媒体库")
+    return items
+
+
 def _next_id() -> int:
     global _task_seq
     with _tasks_lock:
@@ -285,7 +330,7 @@ def scan_source(source_id: int, task_id: int) -> None:
                 break
             wait_if_paused()
 
-            if entry["kind"] in ("video", "audio", "image"):
+            if entry["kind"] in ("video", "audio", "image", "subtitle"):
                 collected.append({
                     "remote_path": entry["path"],
                     "name": entry["name"],
@@ -314,6 +359,8 @@ def scan_source(source_id: int, task_id: int) -> None:
         # TG 导出封面：只有该源开启了 tg_mode 才做同名封面匹配
         if src.get("tg_mode"):
             items = _match_posters(items)
+        # 字幕：同名 .srt / .vtt 关联到视频/音频（附属品，不单独入媒体库）
+        items = _match_subtitles(items)
         added, total, removed = db.bulk_upsert_media(source_id, items)
         elapsed = int((time.time() - t0) * 1000)
         db.update_source(source_id, {

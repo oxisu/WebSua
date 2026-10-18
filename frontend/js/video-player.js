@@ -10,7 +10,7 @@
  *  6. 保留原有三条看门狗（加载超时 / 停滞 / 卡死重试）与端点回退机制
  */
 
-import { showToast, escapeHtml, probeMediaFailure, formatTime } from './utils.js';
+import { showToast, escapeHtml, probeMediaFailure, formatTime, srtToVtt } from './utils.js';
 import { getPosition, setPosition, clearPosition, pushProgress } from './progress.js';
 
 let activePlayer = null;
@@ -119,6 +119,9 @@ export function createVideoPlayer(container, url, options = {}) {
                                 <div class="cvp-volume-track"><div class="cvp-volume-fill"></div></div>
                             </div>
                         </div>
+                        <button class="cvp-btn cvp-subtitle-btn" data-tooltip="字幕" aria-label="字幕" style="display:none">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M7 15h3M13 15h4"/></svg>
+                        </button>
                         <button class="cvp-btn cvp-fullscreen-btn" data-tooltip="全屏" aria-label="全屏">
                             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
                         </button>
@@ -132,11 +135,40 @@ export function createVideoPlayer(container, url, options = {}) {
                                 <button class="cvp-more-option cvp-more-download-option" type="button">下载</button>
                                 <button class="cvp-more-option cvp-more-link-option" type="button">复制直链</button>
                                 <button class="cvp-more-option cvp-more-info-option" type="button">视频信息</button>
+                                <button class="cvp-more-option cvp-more-subtitle-option" type="button" style="display:none">字幕设置</button>
                                 <button class="cvp-more-option cvp-more-debug-option" type="button">调试日志</button>
                             </div>
                             <div class="cvp-info-panel">
                                 <div class="cvp-info-title">视频信息</div>
                                 <div class="cvp-info-body"></div>
+                            </div>
+                            <div class="cvp-subtitle-panel">
+                                <div class="cvp-subtitle-title">字幕设置</div>
+                                <div class="cvp-sub-row">
+                                    <span class="cvp-sub-label">显示</span>
+                                    <div class="cvp-sub-seg" data-group="on">
+                                        <button type="button" data-val="1">开</button>
+                                        <button type="button" data-val="0" class="cvp-sub-active">关</button>
+                                    </div>
+                                </div>
+                                <div class="cvp-sub-row">
+                                    <span class="cvp-sub-label">字号</span>
+                                    <div class="cvp-sub-seg" data-group="size">
+                                        <button type="button" data-val="sm">小</button>
+                                        <button type="button" data-val="md" class="cvp-sub-active">中</button>
+                                        <button type="button" data-val="lg">大</button>
+                                    </div>
+                                </div>
+                                <div class="cvp-sub-row">
+                                    <span class="cvp-sub-label">延迟</span>
+                                    <div class="cvp-sub-seg" data-group="delay">
+                                        <button type="button" data-val="-0.5">-0.5s</button>
+                                        <button type="button" data-val="-0.2">-0.2s</button>
+                                        <button type="button" data-val="0" class="cvp-sub-active">0</button>
+                                        <button type="button" data-val="0.2">+0.2s</button>
+                                        <button type="button" data-val="0.5">+0.5s</button>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -194,6 +226,9 @@ export function createVideoPlayer(container, url, options = {}) {
     const moreInfoOption = q('.cvp-more-info-option');
     const infoPanel = q('.cvp-info-panel');
     const infoBody = q('.cvp-info-body');
+    const subBtn = q('.cvp-subtitle-btn');
+    const moreSubOption = q('.cvp-more-subtitle-option');
+    const subtitlePanel = q('.cvp-subtitle-panel');
     const retryBtn = q('.cvp-loading-retry');
     const tooltip = q('.cvp-progress-tooltip');
     const tapLeft = q('.cvp-tap-left');
@@ -271,6 +306,120 @@ export function createVideoPlayer(container, url, options = {}) {
         });
     }
 
+    /* ---------- 字幕 ----------
+     * 后端按原文返回 .srt / .vtt，这里做 SRT→VTT 转换后挂 <track>，
+     * 因此后端保持零第三方依赖。延迟通过改写 TextTrackCue 时间实现。 */
+    const sub = {
+        url: options.subtitle || null, loaded: false, enabled: false,
+        size: 'md', delay: 0, track: null, blobUrl: null, cues: [],
+    };
+
+    function syncSubSeg(group, val) {
+        if (!subtitlePanel) return;
+        const seg = subtitlePanel.querySelector(`[data-group="${group}"]`);
+        if (!seg) return;
+        seg.querySelectorAll('button').forEach(b =>
+            b.classList.toggle('cvp-sub-active', b.dataset.val === val));
+    }
+
+    function applySubtitle() {
+        const t = sub.track ? video.textTracks[0] : null;
+        if (t) {
+            t.mode = sub.enabled ? 'showing' : 'disabled';
+            const cues = t.cues;
+            // 只在该轨道的 cue 数与首次记录一致时改写，避免重复叠加偏移
+            if (cues && sub.cues.length && sub.cues.length === cues.length) {
+                for (let i = 0; i < cues.length; i++) {
+                    cues[i].startTime = Math.max(0, sub.cues[i].start + sub.delay);
+                    cues[i].endTime = Math.max(0, sub.cues[i].end + sub.delay);
+                }
+            }
+        }
+        wrapper.classList.toggle('cvp-sub-sm', sub.enabled && sub.size === 'sm');
+        wrapper.classList.toggle('cvp-sub-md', sub.enabled && sub.size === 'md');
+        wrapper.classList.toggle('cvp-sub-lg', sub.enabled && sub.size === 'lg');
+        if (subBtn) subBtn.classList.toggle('cvp-sub-off', !sub.enabled);
+        syncSubSeg('on', sub.enabled ? '1' : '0');
+    }
+
+    function setSubtitleEnabled(on) {
+        sub.enabled = on;
+        applySubtitle();
+    }
+
+    async function loadSubtitle() {
+        if (!sub.url || sub.loaded) return;
+        sub.loaded = true;
+        try {
+            const r = await fetch(sub.url);
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            const raw = await r.text();
+            if (!raw.trim()) throw new Error('字幕文件为空');
+            const vtt = /\.vtt(\?|$)/i.test(sub.url) ? raw : srtToVtt(raw);
+            sub.blobUrl = URL.createObjectURL(new Blob([vtt], { type: 'text/vtt' }));
+            const track = document.createElement('track');
+            track.kind = 'subtitles';
+            track.label = '字幕';
+            track.srclang = 'zh';
+            track.default = true;
+            track.src = sub.blobUrl;
+            video.append(track);
+            sub.track = track;
+            track.addEventListener('load', () => {
+                const t = video.textTracks[0];
+                if (!t) return;
+                sub.cues = Array.from(t.cues || [])
+                    .map(cu => ({ start: cu.startTime, end: cu.endTime }));
+                setSubtitleEnabled(true);   // 有字幕默认显示
+            });
+            if (subBtn) subBtn.style.display = '';
+            if (moreSubOption) moreSubOption.style.display = '';
+            log('字幕已加载：' + sub.url.split('/').pop());
+        } catch (e) {
+            sub.loaded = false;             // 允许重试
+            log('字幕加载失败：' + e.message);
+            showToast('字幕加载失败：' + e.message, 'err');
+        }
+    }
+
+    if (subBtn) {
+        subBtn.addEventListener('click', e => {
+            e.stopPropagation();
+            if (!sub.track) { loadSubtitle(); return; }
+            setSubtitleEnabled(!sub.enabled);
+        });
+    }
+    if (subtitlePanel) {
+        subtitlePanel.querySelectorAll('.cvp-sub-seg').forEach(seg => {
+            seg.addEventListener('click', e => {
+                const btn = e.target.closest('button');
+                if (!btn) return;
+                e.stopPropagation();
+                const g = seg.dataset.group;
+                if (g === 'on') setSubtitleEnabled(btn.dataset.val === '1');
+                else if (g === 'size') { sub.size = btn.dataset.val; applySubtitle(); }
+                else if (g === 'delay') { sub.delay = parseFloat(btn.dataset.val); applySubtitle(); }
+                syncSubSeg(g, btn.dataset.val);
+            });
+        });
+    }
+    if (moreSubOption) {
+        moreSubOption.addEventListener('click', e => {
+            e.stopPropagation();
+            moreMenu.classList.remove('cvp-more-show');
+            const willShow = !subtitlePanel.classList.contains('cvp-subtitle-show');
+            infoPanel.classList.remove('cvp-info-show');
+            subtitlePanel.classList.toggle('cvp-subtitle-show', willShow);
+            showControls();
+        });
+    }
+    const closeSubtitlePanel = e => {
+        if (!wrapper.contains(e.target) && subtitlePanel) {
+            subtitlePanel.classList.remove('cvp-subtitle-show');
+        }
+    };
+    document.addEventListener('click', closeSubtitlePanel);
+
     /* ---------- 计时与看门狗 ---------- */
     let loadStart = 0;
     let retryCount = 0;
@@ -288,6 +437,7 @@ export function createVideoPlayer(container, url, options = {}) {
     const hasDifferentFallback = fallbackUrl && mainEndpoint !== fallbackEndpoint;
     log(`创建 src=${url.split('/').pop().split('?')[0]} 画中画=${state.pipSupported ? '支持' : '不支持'}`);
     log(hasDifferentFallback ? '[回退] 已配置备用端点' : '[回退] 无独立备用端点');
+    loadSubtitle();   // 异步加载字幕，不阻塞播放
 
     function currentSourceUrl() { return usedFallback && fallbackUrl ? fallbackUrl : url; }
     function currentSourceLabel() { return usedFallback ? '备用端点' : '主端点'; }
@@ -985,6 +1135,7 @@ export function createVideoPlayer(container, url, options = {}) {
     const closeInfoPanel = e => {
         if (!wrapper.contains(e.target)) {
             infoPanel.classList.remove('cvp-info-show');
+            if (subtitlePanel) subtitlePanel.classList.remove('cvp-subtitle-show');
             rotateMenu.classList.remove('cvp-rotate-show');
             moreMenu.classList.remove('cvp-more-show');
             if (state.playing) hideControls();
@@ -1157,6 +1308,7 @@ export function createVideoPlayer(container, url, options = {}) {
             document.removeEventListener('fullscreenchange', onFullscreenChange);
             document.removeEventListener('click', closeSpeedMenu);
             document.removeEventListener('click', closeInfoPanel);
+            document.removeEventListener('click', closeSubtitlePanel);
             document.removeEventListener('visibilitychange', onVisibilityChange);
             window.removeEventListener('online', onOnline);
             window.removeEventListener('resize', onRotateResize);
@@ -1180,6 +1332,11 @@ export function createVideoPlayer(container, url, options = {}) {
                 state.posterImg.onload = state.posterImg.onerror = null;
                 state.posterImg.src = '';
                 state.posterImg = null;
+            }
+            if (sub.blobUrl) {
+                URL.revokeObjectURL(sub.blobUrl);
+                sub.blobUrl = null;
+                sub.track = null;
             }
         },
     };

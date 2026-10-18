@@ -19,6 +19,9 @@ VIDEO_EXTS = {
 AUDIO_EXTS = {".mp3", ".m4a", ".aac", ".flac", ".wav", ".ogg", ".opus", ".wma", ".ape"}
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".avif", ".heic", ".jxl"}
 SUBTITLE_EXTS = {".srt", ".ass", ".ssa", ".vtt", "sub"}
+# 只把 .srt / .vtt 当作可内挂字幕：.ass/.ssa 的样式与定位解析复杂度高，
+# 明确不支持（前端会提示）。二者仅作为提示，不建立索引。
+SUBTITLE_KIND_EXTS = {".srt", ".vtt"}
 
 KIND_BY_EXT = {}
 for _e in VIDEO_EXTS:
@@ -27,6 +30,8 @@ for _e in AUDIO_EXTS:
     KIND_BY_EXT[_e] = "audio"
 for _e in IMAGE_EXTS:
     KIND_BY_EXT[_e] = "image"
+for _e in SUBTITLE_KIND_EXTS:
+    KIND_BY_EXT[_e] = "subtitle"
 
 MIME_BY_EXT = {
     ".mp4": "video/mp4", ".m4v": "video/x-m4v", ".mov": "video/quicktime",

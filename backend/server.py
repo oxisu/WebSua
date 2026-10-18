@@ -260,6 +260,8 @@ def media_dto(m: dict[str, Any]) -> dict[str, Any]:
         "info": f"/api/media/{m['id']}",
         # TG 导出封面（同目录同名图片），存在才有值
         "poster": (f"/api/poster/{m['id']}" if m.get("poster_path") else None),
+        # 同目录同名字幕（.srt/.vtt），存在才有值
+        "subtitle": (f"/api/subtitle/{m['id']}" if m.get("subtitle_path") else None),
     }
 
 
@@ -703,6 +705,44 @@ def api_poster(c: Ctx) -> None:
         return
     c.h.send_response(200)
     c.h.send_header("Content-Type", guess_mime(poster, "image/jpeg"))
+    if head.get("content-length"):
+        c.h.send_header("Content-Length", head["content-length"])
+    c.h.send_header("Cache-Control", "max-age=3600")
+    c.h.end_headers()
+    c._sent = True
+    try:
+        for chunk in iter_chunks(resp):
+            c.h.wfile.write(chunk)
+    finally:
+        resp.close()
+
+
+@route("GET", r"/api/subtitle/(?P<mid>\d+)")
+def api_subtitle(c: Ctx) -> None:
+    """同目录同名字幕（.srt / .vtt）。无字幕时 404，前端据此回退。
+
+    按**原文**返回，不做格式转换：SRT→VTT 在前端完成，
+    后端因此保持零第三方依赖。
+    """
+    mid = int(c.params["mid"])
+    m = db.get_media(mid)
+    if not m:
+        c.fail("媒体不存在", 404)
+        return
+    sub = m.get("subtitle_path") or ""
+    if not sub:
+        c.fail("无字幕", 404)
+        return
+    try:
+        client = _client_for_media(m)
+        resp, head = client.stream(sub, None, timeout=30)
+    except WebDAVError as e:
+        c.send_json({"ok": False, "error": f"字幕读取失败：{e}"}, 502)
+        return
+    ctype = ("text/vtt; charset=utf-8" if sub.lower().endswith(".vtt")
+             else "application/x-subrip; charset=utf-8")
+    c.h.send_response(200)
+    c.h.send_header("Content-Type", ctype)
     if head.get("content-length"):
         c.h.send_header("Content-Length", head["content-length"])
     c.h.send_header("Cache-Control", "max-age=3600")

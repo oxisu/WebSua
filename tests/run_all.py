@@ -128,6 +128,9 @@ def main() -> int:
     results.append(("子目录错误降级", run(
         "子目录列举失败时降级而非整轮崩溃（v1.0.0 回归）",
         [PY, "tests/test_subdir_error.py"])))
+    results.append(("字幕关联", run(
+        "同目录同名字幕关联到视频 / 字幕流读取 / .ass 忽略",
+        [PY, "tests/test_subtitles.py"])))
 
     # 认证场景需要把假服务器切到 auth 模式
     print("\n  切换假服务器到认证模式…")
