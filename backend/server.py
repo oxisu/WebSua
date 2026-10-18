@@ -313,6 +313,8 @@ def api_list_sources(c: Ctx) -> None:
         d["counts"] = counts.get(s["id"], {"all": 0, "size_total": 0})
         d["has_password"] = bool(s.get("password"))
         d["scan_running"] = scanner.active_task_for(s["id"]) is not None
+        # 有断点 = 上次取消/中断的扫描可以继续（前端显示「继续扫描」）
+        d["resumable"] = db.has_resumable_scan(s["id"])
         out.append(d)
     c.ok(sources=out)
 
@@ -366,12 +368,59 @@ def api_delete_source(c: Ctx) -> None:
 
 @route("POST", r"/api/sources/(?P<sid>\d+)/scan")
 def api_scan_source(c: Ctx) -> None:
+    """启动扫描。body/query 可带 mode=full|incremental、resume=true。
+
+    默认 full（全量重扫）；对已扫过的源应该传 incremental —— 未变项
+    不写库、不刷新 indexed_at。resume=true 从上次取消/中断的断点继续。
+    """
     sid = int(c.params["sid"])
     if not db.get_source(sid):
         c.fail("数据源不存在", 404)
         return
-    task = scanner.start_scan(sid)
+    d = c.json() if c.body else {}
+    mode = str(d.get("mode") or c.q("mode", "") or "full")
+    resume = bool(d.get("resume")) or c.q("resume", "") in ("1", "true")
+    if mode not in ("full", "incremental"):
+        c.fail("mode 只支持 full / incremental", 400)
+        return
+    task = scanner.start_scan(sid, mode=mode, resume=resume)
     c.ok(task=task)
+
+
+@route("GET", r"/api/sources/(?P<sid>\d+)/scan-state")
+def api_scan_state(c: Ctx) -> None:
+    """查询是否有可继续的扫描断点（取消/中断留下的现场）。"""
+    sid = int(c.params["sid"])
+    if not db.get_source(sid):
+        c.fail("数据源不存在", 404)
+        return
+    if scanner.active_task_for(sid):
+        c.ok(resumable=False, reason="扫描正在进行")
+        return
+    st = db.get_scan_state(sid)
+    if not st:
+        c.ok(resumable=False)
+        return
+    c.ok(resumable=True, state={
+        "root": st["root"], "mode": st.get("mode", "full"),
+        "pending_dirs": len(st["stack"]),
+        "visited_dirs": len(st["visited"]),
+        "staged_files": db.stage_count(sid),
+        "started_at": st["started_at"], "updated_at": st["updated_at"],
+    })
+
+
+@route("DELETE", r"/api/sources/(?P<sid>\d+)/scan-state")
+def api_discard_scan_state(c: Ctx) -> None:
+    """放弃已保存的扫描进度（断点 + 暂存条目一起清）。"""
+    sid = int(c.params["sid"])
+    if not db.get_source(sid):
+        c.fail("数据源不存在", 404)
+        return
+    if not scanner.discard_scan_state(sid):
+        c.fail("没有可放弃的扫描进度（或扫描正在进行中）", 409)
+        return
+    c.ok()
 
 
 @route("POST", r"/api/sources/(?P<sid>\d+)/scan/(?P<action>pause|resume|cancel)")

@@ -72,6 +72,15 @@ SCAN_HTTP_TIMEOUT = int(os.environ.get("WEBSUA_SCAN_HTTP_TIMEOUT", "120"))
 SCAN_LOG_EVERY_DIRS = int(os.environ.get("WEBSUA_SCAN_LOG_EVERY_DIRS", "25"))
 SCAN_LOG_EVERY_FILES = int(os.environ.get("WEBSUA_SCAN_LOG_EVERY_FILES", "500"))
 
+# ---- 增量扫描 / 断点续扫 ----
+# 扫描中途发现的文件先写 scan_stage 暂存表（而不是全堆内存），每这么多条批量落库一次
+SCAN_STAGE_FLUSH_EVERY = int(os.environ.get("WEBSUA_SCAN_STAGE_FLUSH", "500"))
+# 断点（待遍历目录栈）持久化节流：每这么多目录、或这么多秒才存一次。
+# 全量栈 JSON 可能上百 KB，每个目录都存会把 DB 写爆；取消/完成时总会再存一次，
+# 所以这里丢的也只是「最近一会儿」的进度，重扫那几个目录而已。
+SCAN_STATE_SAVE_EVERY_DIRS = int(os.environ.get("WEBSUA_SCAN_STATE_DIRS", "100"))
+SCAN_STATE_SAVE_EVERY_SECS = float(os.environ.get("WEBSUA_SCAN_STATE_SECS", "30"))
+
 # 扫描日志文件
 SCAN_LOG_PATH = DATA_DIR / "scan.log"
 SCAN_LOG_MAX_BYTES = 512 * 1024  # 超过则轮转

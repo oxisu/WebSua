@@ -221,7 +221,9 @@ class WebDAVClient:
 
     def list_tree(self, root: str = "/", max_depth: int = 8,
                   on_progress=None, should_stop=None,
-                  on_error=None, exclude: set[str] | None = None) -> Iterator[dict[str, Any]]:
+                  on_error=None, exclude: set[str] | None = None,
+                  initial_stack=None, initial_visited=None,
+                  on_state=None) -> Iterator[dict[str, Any]]:
         """深度优先遍历，逐个产出文件条目（带去重与目录跳过）。
 
         认证/权限类错误（401/403）必须向上抛 —— 否则整个扫描会「成功但 0 个文件」，
@@ -231,10 +233,18 @@ class WebDAVClient:
 
         should_stop: 可选回调，返回 True 时立即中断遍历（用于暂停/取消扫描）。
         exclude: 需要排除的目录名集合（不含路径，大小写不敏感）。
+        initial_stack / initial_visited: 断点续扫的起点（见 scanner 的
+            scan_state 持久化）。栈是 [(路径, 深度), ...]，LIFO 语义与内部一致。
+        on_state: 每处理完一个目录回调一次，参数为当前的 (stack, visited)
+            快照 —— scanner 用它节流持久化断点。只在 initial_stack 传入时
+            调用（普通一次性遍历不需要付这个代价）。
         """
         self._exclude = {x.lower() for x in (exclude or ())}
-        stack: list[tuple[str, int]] = [(self._norm(root), 0)]
-        visited: set[str] = set()
+        stack: list[tuple[str, int]] = (
+            [tuple(x) for x in initial_stack] if initial_stack
+            else [(self._norm(root), 0)]
+        )
+        visited: set[str] = set(initial_visited or ())
         auth_failed = False
         while stack:
             if should_stop and should_stop():
@@ -272,6 +282,10 @@ class WebDAVClient:
                     yield entry
             if on_progress:
                 on_progress(len(visited), path)
+            if on_state:
+                # 传拷贝：调用方可能把快照交给别的线程/延迟序列化，
+                # 不能把还活着的内部结构直接交出去
+                on_state(list(stack), list(visited))
             if should_stop and should_stop():
                 return
 

@@ -8,7 +8,9 @@ from typing import Any
 
 from . import db
 from .config import (SCAN_MAX_DEPTH, SCAN_LOG_PATH, SCAN_LOG_MAX_BYTES,
-                     SCAN_LOG_EVERY_DIRS, SCAN_LOG_EVERY_FILES)
+                     SCAN_LOG_EVERY_DIRS, SCAN_LOG_EVERY_FILES,
+                     SCAN_STAGE_FLUSH_EVERY, SCAN_STATE_SAVE_EVERY_DIRS,
+                     SCAN_STATE_SAVE_EVERY_SECS)
 from .webdav import WebDAVClient, WebDAVError, make_client
 
 _tasks: dict[int, dict[str, Any]] = {}
@@ -153,6 +155,10 @@ def create_task(source_id: int, kind: str = "full") -> dict[str, Any]:
         "id": _next_id(), "source_id": source_id, "kind": kind,
         "state": "pending", "found": 0, "folders": 0, "error": "",
         "control": "run",       # run | pause | cancel —— 扫描控制
+        "mode": kind,           # full | incremental —— 增量模式跳过未变项
+        "resume": False,        # 是否从断点续扫
+        "added": 0, "updated": 0, "removed": 0, "unchanged": 0,
+        "resumable": False,     # 取消/失败时是否留下了可继续的断点
         "started_at": time.time(), "finished_at": None,
     }
     with _tasks_lock:
@@ -240,7 +246,14 @@ def prune_tasks(keep: int = 100) -> None:
                 del _tasks[tid]
 
 
-def scan_source(source_id: int, task_id: int) -> None:
+def scan_source(source_id: int, task_id: int, mode: str = "full",
+                resume: bool = False) -> None:
+    """扫描一个数据源。
+
+    mode: full（全量重扫）/ incremental（增量：未变项不写库）
+    resume: 从 scan_state 里的目录栈断点继续（配合 scan_stage 暂存表，
+        取消/中断后已发现的文件不丢、不用从根目录重来）
+    """
     src = db.get_source(source_id)
     if not src:
         with _tasks_lock:
@@ -248,20 +261,84 @@ def scan_source(source_id: int, task_id: int) -> None:
             _tasks[task_id]["error"] = "数据源不存在"
         return
 
+    if mode not in ("full", "incremental"):
+        mode = "full"
     with _tasks_lock:
         _tasks[task_id]["state"] = "running"
         _tasks[task_id]["error"] = ""
+        _tasks[task_id]["mode"] = mode
 
     t0 = time.time()
     client: WebDAVClient = make_client(src)
     root = src.get("root_path") or "/"
     exclude = {x.strip() for x in (src.get("exclude_dirs") or "").replace("，", ",").split(",") if x.strip()}
+    exclude_key = ",".join(sorted(exclude))
+    incremental = (mode == "incremental")
+
+    # ---- 断点恢复：参数对得上才续，否则当作过期进度丢掉重扫 ----
+    stack: list | None = None
+    visited: list = []
+    resumed = False
+    if resume:
+        state = db.get_scan_state(source_id)
+        if state and state["stack"] is not None and (
+                state["root"] == root
+                and int(state["max_depth"]) == int(SCAN_MAX_DEPTH)
+                and (state["exclude"] or "") == exclude_key):
+            stack = state["stack"]
+            visited = state["visited"]
+            resumed = True
+            # 沿用旧断点的扫描模式：增量与否要在收尾提交时才知道，
+            # 不能因为这次 start_scan 传了 full 就把增量语义改掉
+            if state.get("mode") in ("full", "incremental"):
+                mode = state["mode"]
+                incremental = (mode == "incremental")
+        elif state:
+            db.clear_scan_state(source_id)   # 根目录/排除项/深度变了，旧进度作废
+            scan_log("info", source_id, "扫描参数已变化，放弃旧断点重新扫描")
+    if not resumed:
+        db.stage_clear(source_id)            # 全新一轮：清掉上一轮的暂存条目
+    with _tasks_lock:
+        # 如实回写：请求带 resume 但没有有效断点时，任务记录的是全量重扫
+        _tasks[task_id]["resume"] = resumed
+        _tasks[task_id]["mode"] = mode
+
+    # 最新遍历现场（on_state 每次更新）—— 取消时靠它落盘，
+    # 还没走到第一个目录时至少也有「从根再来」的合理初值
+    latest = {"stack": stack if resumed else [(WebDAVClient._norm(root), 0)],
+              "visited": visited}
+
+    tag = "续扫" if resumed else ("增量扫描" if incremental else "扫描")
     scan_log("info", source_id,
-             f"开始扫描 root={root} depth={SCAN_MAX_DEPTH}"
-             + (f" 排除目录={','.join(sorted(exclude))}" if exclude else ""))
+             f"开始{tag} root={root} depth={SCAN_MAX_DEPTH}"
+             + (f" 排除目录={exclude_key}" if exclude_key else "")
+             + (f" 断点：剩余 {len(stack)} 个目录 · 已发现 {db.stage_count(source_id)} 个文件"
+                if resumed else ""))
 
     failed_dirs: list[tuple[str, str]] = []
     progress_marks = {"dirs": 0, "files": 0}   # 上次记进度时的数值
+    buffer: list[dict[str, Any]] = []          # 待落 scan_stage 的条目
+    found_n = db.stage_count(source_id) if resumed else 0
+    dirs_since_save = 0
+    last_save_at = time.time()
+
+    def flush_stage() -> None:
+        nonlocal buffer
+        if buffer:
+            db.stage_put_many(source_id, buffer)
+            buffer = []
+
+    def save_state(force: bool = False) -> None:
+        """把当前遍历现场写进 scan_state（节流，见 config）。"""
+        nonlocal dirs_since_save, last_save_at
+        now = time.time()
+        if not force and dirs_since_save < SCAN_STATE_SAVE_EVERY_DIRS \
+                and (now - last_save_at) < SCAN_STATE_SAVE_EVERY_SECS:
+            return
+        db.save_scan_state(source_id, root, SCAN_MAX_DEPTH, exclude_key,
+                           latest["stack"], latest["visited"], mode)
+        dirs_since_save = 0
+        last_save_at = now
 
     def on_progress(folders_done: int, path: str) -> None:
         with _tasks_lock:
@@ -271,10 +348,15 @@ def scan_source(source_id: int, task_id: int) -> None:
         # 是在干活还是卡死了（每 25 个目录记一条）
         if folders_done - progress_marks["dirs"] >= SCAN_LOG_EVERY_DIRS:
             progress_marks["dirs"] = folders_done
-            with _tasks_lock:
-                found = _tasks[task_id].get("found", 0)
             scan_log("info", source_id,
-                     f"进度：已遍历 {folders_done} 目录 · 已发现 {found} 文件 · 当前 {path}")
+                     f"进度：已遍历 {folders_done} 目录 · 已发现 {found_n} 文件 · 当前 {path}")
+
+    def on_state(stack_snap: list, visited_snap: list) -> None:
+        nonlocal dirs_since_save
+        latest["stack"] = stack_snap
+        latest["visited"] = visited_snap
+        dirs_since_save += 1
+        save_state()
 
     def on_dir_error(path: str, err: str) -> None:
         """目录列举失败：绝不静默——整个子树的文件都会消失。"""
@@ -319,11 +401,12 @@ def scan_source(source_id: int, task_id: int) -> None:
         return False
 
     try:
-        collected: list[dict[str, Any]] = []
         cancelled = False
         for entry in client.list_tree(root, max_depth=SCAN_MAX_DEPTH,
                                       on_progress=on_progress, should_stop=should_stop,
-                                      on_error=on_dir_error, exclude=exclude):
+                                      on_error=on_dir_error, exclude=exclude,
+                                      initial_stack=stack, initial_visited=visited,
+                                      on_state=on_state):
             # 文件级控制：暂停/取消必然生效（生成器的目录级检查可能错过时机）
             if control() == "cancel":
                 cancelled = True
@@ -331,7 +414,7 @@ def scan_source(source_id: int, task_id: int) -> None:
             wait_if_paused()
 
             if entry["kind"] in ("video", "audio", "image", "subtitle"):
-                collected.append({
+                buffer.append({
                     "remote_path": entry["path"],
                     "name": entry["name"],
                     "ext": entry["ext"],
@@ -341,34 +424,49 @@ def scan_source(source_id: int, task_id: int) -> None:
                     "mtime": entry["mtime"],
                     "folder": entry["folder"],
                 })
+                found_n += 1
+                if len(buffer) >= SCAN_STAGE_FLUSH_EVERY:
+                    flush_stage()
             with _tasks_lock:
-                _tasks[task_id]["found"] = len(collected)
-            on_found(len(collected))   # 内部按 500 节流写日志
+                _tasks[task_id]["found"] = found_n
+            on_found(found_n)   # 内部按 500 节流写日志
 
-        # 被取消：不落库，直接标记 cancelled
+        # 被取消：不提交，把现场留在 scan_stage + scan_state 里，可随时续扫
         if cancelled or control() == "cancel":
+            flush_stage()
+            save_state(force=True)
             with _tasks_lock:
                 _tasks[task_id].update({
-                    "state": "cancelled", "found": len(collected),
+                    "state": "cancelled", "found": found_n,
+                    "resumable": True,
                     "finished_at": time.time(),
                 })
-            scan_log("info", source_id, f"扫描已取消（已发现 {len(collected)} 个文件）")
+            scan_log("info", source_id,
+                     f"扫描已取消，进度已保存（已发现 {found_n} 个文件，"
+                     f"剩余 {len(latest['stack'])} 个目录待遍历）——可随时继续扫描")
             return
 
-        items = collected
+        # ---- 收尾：暂存表 → 封面/字幕匹配 → 增量/全量提交 ----
+        flush_stage()
+        save_state(force=True)   # 先落现场：万一提交阶段炸了，也能从遍历断点续
+        items = list(db.iter_stage_rows(source_id))
         # TG 导出封面：只有该源开启了 tg_mode 才做同名封面匹配
         if src.get("tg_mode"):
             items = _match_posters(items)
         # 字幕：同名 .srt / .vtt 关联到视频/音频（附属品，不单独入媒体库）
         items = _match_subtitles(items)
-        added, total, removed = db.bulk_upsert_media(source_id, items)
+        added, updated, removed, unchanged = db.bulk_upsert_media(
+            source_id, items, incremental=incremental)
         elapsed = int((time.time() - t0) * 1000)
         db.update_source(source_id, {
             "last_scan_at": int(time.time()), "last_scan_ms": elapsed,
-            "last_error": "", "item_count": total,
+            "last_error": "", "item_count": added + updated + unchanged,
         })
+        db.clear_scan_state(source_id)
+        total = added + updated + unchanged
         scan_log("info", source_id,
-                 f"扫描完成 文件={len(items)} 新增={added} 移除={removed} 耗时={elapsed}ms")
+                 f"扫描完成（{tag}） 文件={len(items)} 新增={added} 更新={updated} "
+                 f"未变={unchanged} 移除={removed} 耗时={elapsed}ms")
         if failed_dirs:
             scan_log("error", source_id,
                      f"⚠ 有 {len(failed_dirs)} 个目录列举失败被跳过（可能丢失大量文件），"
@@ -378,50 +476,90 @@ def scan_source(source_id: int, task_id: int) -> None:
         with _tasks_lock:
             _tasks[task_id].update({
                 "state": "done", "found": len(items), "total": total,
-                "added": added, "removed": removed,
+                "added": added, "updated": updated, "removed": removed,
+                "unchanged": unchanged,
                 "failed_dirs": len(failed_dirs),
                 "finished_at": time.time(), "elapsed_ms": elapsed,
             })
     except WebDAVError as e:
+        # 保留现场：密码修好后可以直接「继续扫描」，不用从根目录重来
+        flush_stage()
+        save_state(force=True)
         db.update_source(source_id, {"last_error": str(e)})
-        scan_log("error", source_id, f"扫描失败：{e}")
+        scan_log("error", source_id, f"扫描失败：{e}（已保存进度，可继续扫描）")
         with _tasks_lock:
             _tasks[task_id].update({"state": "failed", "error": str(e),
+                                    "resumable": True,
                                     "finished_at": time.time()})
     except Exception as e:  # noqa: BLE001
+        flush_stage()
+        save_state(force=True)
         db.update_source(source_id, {"last_error": f"内部错误：{e}"})
-        scan_log("error", source_id, f"扫描内部错误：{e}")
+        scan_log("error", source_id, f"扫描内部错误：{e}（已保存进度，可继续扫描）")
         with _tasks_lock:
             _tasks[task_id].update({
                 "state": "failed", "error": f"内部错误：{e}",
                 "trace": traceback.format_exc()[-1500:],
+                "resumable": True,
                 "finished_at": time.time(),
             })
     finally:
         prune_tasks()
 
 
-def start_scan(source_id: int, async_: bool = True) -> dict[str, Any]:
-    """启动扫描。async_=True 时后台线程执行。"""
+def start_scan(source_id: int, mode: str = "full", resume: bool = False,
+               async_: bool = True) -> dict[str, Any]:
+    """启动扫描。async_=True 时后台线程执行。
+
+    mode: full | incremental（增量：未变项不写库、不刷新 indexed_at）
+    resume: 从上次取消/中断的断点继续（见 scan_source）
+    """
     running = active_task_for(source_id)
     if running:
         return running
-    task = create_task(source_id)
+    if mode not in ("full", "incremental"):
+        mode = "full"
+    task = create_task(source_id, kind=mode)
     if async_:
-        threading.Thread(target=scan_source, args=(source_id, task["id"]),
+        threading.Thread(target=scan_source,
+                         args=(source_id, task["id"], mode, bool(resume)),
                          daemon=True).start()
     else:
-        scan_source(source_id, task["id"])
+        scan_source(source_id, task["id"], mode, bool(resume))
         return get_task(task["id"]) or task
     return task
 
 
-def scan_all_enabled() -> list[dict[str, Any]]:
-    return [start_scan(s["id"]) for s in db.list_sources(only_enabled=True)]
+def discard_scan_state(source_id: int) -> bool:
+    """放弃已保存的扫描进度（用户点「放弃」）。有活动任务时拒绝。"""
+    if active_task_for(source_id):
+        return False
+    if not db.has_resumable_scan(source_id):
+        return False
+    db.clear_scan_state(source_id)
+    scan_log("info", source_id, "用户放弃已保存的扫描进度")
+    return True
+
+
+def scan_all_enabled(mode: str | None = None) -> list[dict[str, Any]]:
+    """扫描所有启用的源。mode=None 时按源自动选：扫过的走增量，没扫过的全量。"""
+    out = []
+    for s in db.list_sources(only_enabled=True):
+        m = mode or ("incremental" if s.get("last_scan_at") else "full")
+        out.append(start_scan(s["id"], mode=m))
+    return out
 
 
 def start_auto_scans() -> None:
-    """启动时对勾选了自动扫描的数据源做一次后台扫描。"""
+    """启动时对勾选了自动扫描的数据源做一次后台扫描。
+
+    扫过的源走增量（只写变化项）；留着断点的源直接续扫 ——
+    上次取消的扫描不该因为重启而从零再来。
+    """
     for s in db.list_sources(only_enabled=True):
-        if s.get("auto_scan"):
-            start_scan(s["id"])
+        if not s.get("auto_scan"):
+            continue
+        if db.has_resumable_scan(s["id"]):
+            start_scan(s["id"], resume=True)
+        else:
+            start_scan(s["id"], mode="incremental" if s.get("last_scan_at") else "full")

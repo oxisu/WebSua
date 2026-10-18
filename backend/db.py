@@ -83,6 +83,38 @@ CREATE TABLE IF NOT EXISTS meta (
     key           TEXT PRIMARY KEY,
     value         TEXT
 );
+
+-- 增量扫描 / 断点续扫：扫描中途发现的文件先落暂存表。
+-- 取消或进程中断时进度不丢，「继续扫描」从 scan_state 的目录栈接着走。
+CREATE TABLE IF NOT EXISTS scan_stage (
+    source_id     INTEGER NOT NULL,
+    remote_path   TEXT NOT NULL,
+    name          TEXT NOT NULL,
+    ext           TEXT,
+    kind          TEXT NOT NULL DEFAULT 'video',
+    mime          TEXT,
+    size          INTEGER DEFAULT 0,
+    mtime         INTEGER,
+    folder        TEXT DEFAULT '',
+    poster_path   TEXT DEFAULT '',
+    subtitle_path TEXT DEFAULT '',
+    PRIMARY KEY (source_id, remote_path)
+);
+
+-- 断点续扫的遍历现场：待遍历目录栈 + 已访问目录 + 扫描参数快照。
+-- root/exclude/max_depth 与当前数据源不一致时视为过期，忽略重扫。
+-- mode 记录这一轮是全量还是增量 —— 续扫的收尾提交要按原模式来。
+CREATE TABLE IF NOT EXISTS scan_state (
+    source_id     INTEGER PRIMARY KEY,
+    root          TEXT NOT NULL,
+    max_depth     INTEGER NOT NULL DEFAULT 8,
+    exclude       TEXT DEFAULT '',
+    mode          TEXT DEFAULT 'full',
+    stack         TEXT DEFAULT '[]',
+    visited       TEXT DEFAULT '[]',
+    started_at    INTEGER NOT NULL,
+    updated_at    INTEGER NOT NULL
+);
 """
 
 
@@ -188,6 +220,10 @@ def delete_source(source_id: int) -> bool:
     with _lock:
         conn = get_conn()
         conn.execute("DELETE FROM media WHERE source_id = ?", (source_id,))
+        # 扫描暂存表 / 断点没有外键级联，手动清掉，否则删源后留下一具
+        # 「可继续扫描」的僵尸进度，指向已经不存在的源
+        conn.execute("DELETE FROM scan_stage WHERE source_id = ?", (source_id,))
+        conn.execute("DELETE FROM scan_state WHERE source_id = ?", (source_id,))
         cur = conn.execute("DELETE FROM sources WHERE id = ?", (source_id,))
         conn.commit()
     return cur.rowcount > 0
@@ -195,36 +231,62 @@ def delete_source(source_id: int) -> bool:
 
 # ---------------- media ----------------
 
-def bulk_upsert_media(source_id: int, items: list[dict[str, Any]]) -> tuple[int, int, int]:
-    """写入/更新媒体条目。返回 (新增数, 总数, 清理数)。
+def _same_signature(old: sqlite3.Row, it: dict[str, Any]) -> bool:
+    """远端条目与库里记录是否「同一份内容」。
+
+    增量扫描的判定依据：大小、修改时间、关联封面/字幕全都一致才认为没变。
+    网盘的 getlastmodified 精度到秒，同秒内改动会被漏过 —— 可接受：
+    漏过的后果只是多写一次行，不会丢数据。
+    """
+    return (int(old["size"] or 0) == int(it.get("size") or 0)
+            and old["mtime"] == it.get("mtime")
+            and (old["poster_path"] or "") == (it.get("poster_path") or "")
+            and (old["subtitle_path"] or "") == (it.get("subtitle_path") or ""))
+
+
+def bulk_upsert_media(source_id: int, items: list[dict[str, Any]],
+                      incremental: bool = False) -> tuple[int, int, int, int]:
+    """写入/更新媒体条目。返回 (新增数, 更新数, 清理数, 未变数)。
 
     注意：远端 PROPFIND 可能返回重复条目（123 云盘等网盘出现过），
     items 内同 remote_path 出现两次时，若不做防重，第二次 INSERT 会
     撞 UNIQUE(source_id, remote_path) 让整个扫描中途失败。
+
+    incremental=True（增量扫描）：(size, mtime, poster, subtitle) 与库里
+    完全一致的条目直接跳过 —— 不写库、不刷新 indexed_at。否则每次重扫
+    都会把全表 indexed_at 刷成「刚刚」，视频流的「最新」排序失去意义，
+    纯属写放大。
     """
     now = int(time.time())
     with _lock:
         conn = get_conn()
         existing = {
-            r["remote_path"]: r["id"]
-            for r in conn.execute("SELECT id, remote_path FROM media WHERE source_id = ?", (source_id,))
+            r["remote_path"]: r
+            for r in conn.execute(
+                """SELECT id, remote_path, size, mtime, poster_path, subtitle_path
+                   FROM media WHERE source_id = ?""", (source_id,))
         }
         seen: set[str] = set()
-        added = 0
+        added = updated = unchanged = 0
         for it in items:
             rp = it["remote_path"]
             if rp in seen:
                 continue   # 本轮已处理过（远端重复条目），跳过防 UNIQUE 崩溃
             seen.add(rp)
-            if rp in existing:
+            old = existing.get(rp)
+            if old is not None:
+                if incremental and _same_signature(old, it):
+                    unchanged += 1
+                    continue
                 conn.execute(
                     """UPDATE media SET name=?, ext=?, kind=?, mime=?, size=?, mtime=?,
                        folder=?, poster_path=?, subtitle_path=?, indexed_at=? WHERE id=?""",
                     (it["name"], it.get("ext"), it.get("kind", "video"), it.get("mime"),
                      int(it.get("size") or 0), it.get("mtime"),
                      it.get("folder", ""), it.get("poster_path", ""),
-                     it.get("subtitle_path", ""), now, existing[rp]),
+                     it.get("subtitle_path", ""), now, old["id"]),
                 )
+                updated += 1
             else:
                 conn.execute(
                     """INSERT INTO media
@@ -239,12 +301,127 @@ def bulk_upsert_media(source_id: int, items: list[dict[str, Any]]) -> tuple[int,
                      it.get("height"), now),
                 )
                 added += 1
-        gone = [pid for rp, pid in existing.items() if rp not in seen]
+        gone = [row["id"] for rp, row in existing.items() if rp not in seen]
         for i in range(0, len(gone), 400):
             chunk = gone[i:i + 400]
             conn.execute(f"DELETE FROM media WHERE id IN ({','.join('?' * len(chunk))})", chunk)
         conn.commit()
-    return added, len(seen), len(gone)
+    return added, updated, len(gone), unchanged
+
+
+# ---------------- 增量扫描 / 断点续扫 ----------------
+
+def stage_clear(source_id: int) -> None:
+    """清空某个源的扫描暂存表（新一轮全量扫描开始时）。"""
+    with _lock:
+        get_conn().execute("DELETE FROM scan_stage WHERE source_id = ?", (source_id,))
+        get_conn().commit()
+
+
+def stage_put_many(source_id: int, rows: list[dict[str, Any]]) -> None:
+    """批量写入暂存表。PK(source_id, remote_path) 天然防重 ——
+    续扫时上一轮已发现的条目重复写入只是覆盖，不会炸 UNIQUE。"""
+    if not rows:
+        return
+    with _lock:
+        conn = get_conn()
+        conn.executemany(
+            """INSERT INTO scan_stage
+               (source_id, remote_path, name, ext, kind, mime, size, mtime,
+                folder, poster_path, subtitle_path)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(source_id, remote_path) DO UPDATE SET
+                 name=excluded.name, ext=excluded.ext, kind=excluded.kind,
+                 mime=excluded.mime, size=excluded.size, mtime=excluded.mtime,
+                 folder=excluded.folder, poster_path=excluded.poster_path,
+                 subtitle_path=excluded.subtitle_path""",
+            [(source_id, r["remote_path"], r["name"], r.get("ext"),
+              r.get("kind", "video"), r.get("mime"), int(r.get("size") or 0),
+              r.get("mtime"), r.get("folder", ""), r.get("poster_path", ""),
+              r.get("subtitle_path", "")) for r in rows],
+        )
+        conn.commit()
+
+
+def stage_count(source_id: int) -> int:
+    with _lock:
+        return get_conn().execute(
+            "SELECT COUNT(*) c FROM scan_stage WHERE source_id = ?", (source_id,)
+        ).fetchone()["c"]
+
+
+def iter_stage_rows(source_id: int, chunk: int = 2000):
+    """分批读出暂存条目（生成器）—— 收尾阶段全量进内存前先留一条流式出口。"""
+    last = ""
+    while True:
+        with _lock:
+            rows = get_conn().execute(
+                """SELECT * FROM scan_stage WHERE source_id = ? AND remote_path > ?
+                   ORDER BY remote_path LIMIT ?""", (source_id, last, chunk)
+            ).fetchall()
+        if not rows:
+            return
+        for r in rows:
+            yield dict(r)
+        last = rows[-1]["remote_path"]
+
+
+def get_scan_state(source_id: int) -> dict[str, Any] | None:
+    with _lock:
+        row = get_conn().execute(
+            "SELECT * FROM scan_state WHERE source_id = ?", (source_id,)).fetchone()
+    if not row:
+        return None
+    d = dict(row)
+    try:
+        d["stack"] = [tuple(x) for x in json.loads(d["stack"])]
+    except (json.JSONDecodeError, TypeError, ValueError):
+        d["stack"] = []
+    try:
+        d["visited"] = list(json.loads(d["visited"]))
+    except (json.JSONDecodeError, TypeError, ValueError):
+        d["visited"] = []
+    return d
+
+
+def save_scan_state(source_id: int, root: str, max_depth: int, exclude: str,
+                    stack: list, visited: list, mode: str = "full") -> None:
+    """持久化遍历现场。stack/visited 是全量快照（不是增量）——
+    调用方负责节流（见 config.SCAN_STATE_SAVE_EVERY_*）。"""
+    now = int(time.time())
+    with _lock:
+        get_conn().execute(
+            """INSERT INTO scan_state
+               (source_id, root, max_depth, exclude, mode, stack, visited, started_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(source_id) DO UPDATE SET
+                 root=excluded.root, max_depth=excluded.max_depth,
+                 exclude=excluded.exclude, mode=excluded.mode,
+                 stack=excluded.stack, visited=excluded.visited,
+                 updated_at=excluded.updated_at""",
+            (source_id, root, int(max_depth), exclude or "",
+             mode if mode in ("full", "incremental") else "full",
+             json.dumps([list(x) for x in stack], ensure_ascii=False),
+             json.dumps(list(visited), ensure_ascii=False),
+             now, now),
+        )
+        get_conn().commit()
+
+
+def clear_scan_state(source_id: int) -> None:
+    """扫描完成 / 用户放弃：清掉断点与暂存表。"""
+    with _lock:
+        conn = get_conn()
+        conn.execute("DELETE FROM scan_state WHERE source_id = ?", (source_id,))
+        conn.execute("DELETE FROM scan_stage WHERE source_id = ?", (source_id,))
+        conn.commit()
+
+
+def has_resumable_scan(source_id: int) -> bool:
+    with _lock:
+        row = get_conn().execute(
+            "SELECT 1 FROM scan_state WHERE source_id = ?", (source_id,)).fetchone()
+    return row is not None
 
 
 def get_media(media_id: int) -> dict[str, Any] | None:
