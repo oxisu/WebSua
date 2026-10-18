@@ -575,6 +575,110 @@ def api_clear_progress(c: Ctx) -> None:
     c.ok(cleared=n)
 
 
+# ---------- 播放队列 ----------
+
+QUEUE_MAX_IDS = 2000          # 单个队列上限，防异常payload把 meta 表撑爆
+QUEUE_MODES = ("off", "all", "one")   # 循环：关 / 整表 / 单集
+
+
+def _normalize_queue(d: Any) -> dict[str, Any] | None:
+    """校验并归一化前端提交的队列状态；不合法返回 None（调用方回 400）。"""
+    if not isinstance(d, dict):
+        return None
+    ids = d.get("ids")
+    if not isinstance(ids, list):
+        return None
+    out: list[int] = []
+    for x in ids:
+        try:
+            v = int(x)
+        except (TypeError, ValueError):
+            return None
+        if v <= 0:
+            return None
+        out.append(v)
+        if len(out) > QUEUE_MAX_IDS:
+            return None
+    mode = d.get("mode", "off")
+    if mode not in QUEUE_MODES:
+        mode = "off"
+    try:
+        index = int(d.get("index", -1))
+    except (TypeError, ValueError):
+        index = -1
+    index = max(-1, min(index, len(out) - 1 if out else -1))
+    return {
+        "ids": out,
+        "index": index,
+        "mode": mode,
+        "shuffle": bool(d.get("shuffle")),
+        # enabled=false = 用户主动清空了队列，不要再自动生成
+        "enabled": d.get("enabled", True) is not False,
+        "origin": str(d.get("origin") or "")[:500],
+        "saved_at": int(time.time()),
+    }
+
+
+@route("GET", r"/api/queue")
+def api_get_queue(c: Ctx) -> None:
+    """读取持久化的播放队列，并把 id 解析成当前存在的媒体。
+
+    队列只存 id（媒体表会随扫描增减），解析阶段剔除已消失的条目，
+    前端拿到的直接就是可渲染的完整列表。
+    """
+    saved = db.get_setting("play_queue") or {}
+    if not isinstance(saved, dict):
+        saved = {}
+    raw = saved.get("ids") or []
+    ids: list[int] = []
+    for x in raw:
+        try:
+            v = int(x)
+        except (TypeError, ValueError):
+            continue
+        if v > 0:
+            ids.append(v)
+    # 停用源的内容不进队列（与 /api/media 的可见性保持一致）
+    rows = [r for r in db.get_media_many(ids) if r.get("source_enabled")]
+    if len(rows) != len(ids):
+        # 有条目失效：顺手写回裁剪后的列表，避免 meta 里堆积死 id
+        db.set_setting("play_queue", {**saved, "ids": [r["id"] for r in rows]})
+    mode = saved.get("mode") if saved.get("mode") in QUEUE_MODES else "off"
+    try:
+        index = int(saved.get("index", -1))
+    except (TypeError, ValueError):
+        index = -1
+    index = max(-1, min(index, len(rows) - 1 if rows else -1))
+    c.ok(queue={
+        "ids": [r["id"] for r in rows],
+        "index": index,
+        "mode": mode,
+        "shuffle": bool(saved.get("shuffle")),
+        "enabled": saved.get("enabled", True) is not False,
+        "origin": str(saved.get("origin") or ""),
+        "items": [media_dto(r) for r in rows],
+    })
+
+
+@route("POST", r"/api/queue")
+def api_set_queue(c: Ctx) -> None:
+    q = _normalize_queue(c.json())
+    if q is None:
+        c.fail("队列数据不合法", 400)
+        return
+    db.set_setting("play_queue", q)
+    c.ok()
+
+
+@route("DELETE", r"/api/queue")
+def api_clear_queue(c: Ctx) -> None:
+    db.set_setting("play_queue", {
+        "ids": [], "index": -1, "mode": "off",
+        "shuffle": False, "enabled": True, "origin": "",
+    })
+    c.ok()
+
+
 # ---------- 媒体流 ----------
 
 def _client_for_media(m: dict[str, Any]) -> WebDAVClient:

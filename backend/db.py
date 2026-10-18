@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import threading
 import time
@@ -258,6 +259,53 @@ def get_media(media_id: int) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
+_NAT_RE = re.compile(r"(\d+)")
+
+
+def natural_key(name: str) -> list:
+    """自然排序键：把文件名里的数字段按**数值**比较。
+
+    「第2集」必须排在「第10集」前面 —— 纯字典序会把 10 排到 2 前面，
+    「下一集」连播就整个乱了。SQLite 没有自然排序，只能取出后在本进程排。
+    """
+    return [int(t) if t.isdigit() else (t or "").lower()
+            for t in _NAT_RE.split(name or "")]
+
+
+def get_media_many(ids: list[int]) -> list[dict[str, Any]]:
+    """按给定顺序取媒体（含来源/收藏信息），不存在的 id 跳过。
+
+    播放队列只存 id，渲染前用这个接口解析成当前实际存在的条目 ——
+    文件被删、源被停用时自然剔除，不会留下点得动却打不开的队列项。
+    """
+    clean = []
+    for x in ids:
+        try:
+            v = int(x)
+        except (TypeError, ValueError):
+            continue
+        if v > 0:
+            clean.append(v)
+    if not clean:
+        return []
+    found: dict[int, dict[str, Any]] = {}
+    with _lock:
+        conn = get_conn()
+        for i in range(0, len(clean), 500):
+            chunk = clean[i:i + 500]
+            ph = ",".join("?" * len(chunk))
+            for r in conn.execute(
+                f"""SELECT m.*, s.name AS source_name, s.color AS source_color,
+                           s.enabled AS source_enabled,
+                           (f.media_id IS NOT NULL) AS is_fav
+                    FROM media m
+                    JOIN sources s ON s.id = m.source_id
+                    LEFT JOIN favorites f ON f.media_id = m.id
+                    WHERE m.id IN ({ph})""", chunk):
+                found[r["id"]] = dict(r)
+    return [found[i] for i in clean if i in found]
+
+
 def query_media(
     source_ids: list[int] | None = None,
     kinds: list[str] | None = None,
@@ -294,6 +342,25 @@ def query_media(
     }
     with _lock:
         conn = get_conn()
+        if order == "natural":
+            # 自然序只能全量取出后在本进程排（见 natural_key）。
+            # 只用于「按目录生成播放队列」这类小结果集，封顶 2 万条防内存爆炸。
+            rows = conn.execute(
+                f"""SELECT m.*, s.name AS source_name, s.color AS source_color,
+                           p.position AS position, p.finished AS finished,
+                           (f.media_id IS NOT NULL) AS is_fav
+                    FROM media m
+                    JOIN sources s ON s.id = m.source_id
+                    LEFT JOIN progress p ON p.media_id = m.id
+                    LEFT JOIN favorites f ON f.media_id = m.id
+                    {clause}
+                    ORDER BY m.folder, m.name
+                    LIMIT 20000""",
+                params).fetchall()
+            rows = sorted(rows_to_dicts(rows),
+                          key=lambda r: (r.get("folder") or "",
+                                         natural_key(r.get("name") or "")))
+            return rows[offset:offset + limit], len(rows)
         total = conn.execute(
             f"SELECT COUNT(*) c FROM media m JOIN sources s ON s.id = m.source_id{clause}",
             params).fetchone()["c"]
