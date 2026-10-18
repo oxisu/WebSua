@@ -101,6 +101,11 @@ def build_fixture():
     for i in range(1, 25):
         FILES[f"/批量/目录{i:02d}/第{i}集.webm"] = filler
 
+    # 番剧目录：一整季连续剧，验证「播放队列」按目录自然序生成下一集
+    # （第2集必须排在第10集前面 —— 字典序会把 10 排到 2 前面）
+    for i in range(1, 13):
+        FILES[f"/番剧/第{i}集.mp4"] = filler
+
 def dirs_of(path: str) -> set[str]:
     """从文件表推导所有目录。"""
     out = {"/"}

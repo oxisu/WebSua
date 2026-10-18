@@ -131,6 +131,9 @@ def main() -> int:
     results.append(("字幕关联", run(
         "同目录同名字幕关联到视频 / 字幕流读取 / .ass 忽略",
         [PY, "tests/test_subtitles.py"])))
+    results.append(("播放队列", run(
+        "目录自然序（第2集<第10集）/ 队列持久化 / 失效id剔除 / 非法payload",
+        [PY, "tests/test_queue.py"])))
 
     # 认证场景需要把假服务器切到 auth 模式
     print("\n  切换假服务器到认证模式…")
