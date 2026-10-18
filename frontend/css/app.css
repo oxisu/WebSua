@@ -1090,6 +1090,13 @@ body.queue-collapsed .queue-toggle svg {
 .pill-auth { background: rgba(46, 212, 122, 0.14); color: var(--ok); }
 .pill-anon { background: var(--bg-4); color: var(--fg-3); }
 .pill-tg { background: rgba(165, 108, 255, 0.16); color: var(--brand-2); }
+/* 失败目录徽标：上次扫描有目录列举失败，必须一眼可见 */
+.pill-fail {
+  background: rgba(255, 92, 108, 0.16);
+  color: var(--danger, #ff5c6c);
+  font-weight: 600;
+  cursor: help;
+}
 
 /* ---- 启停开关（替代孤零零的眼睛按钮）---- */
 .src-switch {
@@ -1440,6 +1447,15 @@ body.queue-collapsed .queue-toggle svg {
 .btn-danger:hover {
   background: rgba(255, 92, 108, 0.2);
   color: var(--danger);
+}
+.btn-warn {
+  color: var(--danger, #ff5c6c);
+  background: rgba(255, 92, 108, 0.14);
+  border: 1px solid rgba(255, 92, 108, 0.32);
+}
+.btn-warn:hover {
+  background: rgba(255, 92, 108, 0.24);
+  color: var(--danger, #ff5c6c);
 }
 .btn-ghost {
   background: transparent;

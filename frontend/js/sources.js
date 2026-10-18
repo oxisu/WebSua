@@ -242,6 +242,14 @@ export class SourceManager {
                 : el('span', { class: 'pill pill-anon' }, '匿名'));
         if (s.tg_mode) nameRow.append(el('span', { class: 'pill pill-tg', title: '已开启 TG 导出封面识别' }, 'TG 封面'));
         if (!s.enabled) nameRow.append(el('span', { class: 'pill pill-off' }, '停用'));
+        // 失败目录徽标：上次扫描有目录列举失败（可能丢了整棵子树），必须一眼可见
+        if (s.failed_dirs && s.failed_dirs.length) {
+            nameRow.append(el('span', {
+                class: 'pill pill-fail',
+                title: '上次扫描有目录列举失败（可能丢失文件），建议「重扫失败目录」：\n'
+                    + s.failed_dirs.map(f => f.folder).join('\n'),
+            }, `⚠ ${s.failed_dirs.length} 目录失败`));
+        }
         idBox.append(nameRow);
         // 完整地址（含协议），左对齐、可换行、超长截断
         idBox.append(el('div', { class: 'src-url', title: s.base_url },
@@ -309,15 +317,17 @@ export class SourceManager {
             el('span', {}, label));
     }
 
-    /** 任务模式标签（完成态用）：全量 / 增量 / 续扫（断点恢复）。 */
+    /** 任务模式标签（完成态用）：全量 / 增量 / 续扫 / 失败重扫。 */
     _modeLabel(task) {
         if (task?.resume) return '续扫';
+        if (task?.mode === 'failed') return '失败重扫';
         return task?.mode === 'incremental' ? '增量' : '全量';
     }
 
-    /** 任务模式描述（进行中用）：扫描 / 增量扫描 / 续扫。 */
+    /** 任务模式描述（进行中用）：扫描 / 增量扫描 / 续扫 / 失败目录重扫。 */
     _modeRunningLabel(task) {
         if (task?.resume) return '续扫';
+        if (task?.mode === 'failed') return '失败目录重扫';
         return task?.mode === 'incremental' ? '增量扫描' : '扫描';
     }
 
@@ -493,6 +503,16 @@ export class SourceManager {
                 title: '放弃已保存的扫描进度',
                 onclick: () => this.discardScan(s.id),
             }, icon('trash', 14), '放弃'));
+        }
+
+        // 有失败目录：提供「只重扫失败目录」——精准复扫，不重扫整个源
+        if (s.failed_dirs && s.failed_dirs.length && !busy) {
+            bar.append(el('button', {
+                class: 'btn btn-sm btn-warn src-rescan-failed',
+                title: '只重新扫描上次列举失败的目录（' + s.failed_dirs.length + ' 个）',
+                disabled: busy,
+                onclick: () => this.scan(s.id, 'failed'),
+            }, icon('refresh', 14), '重扫失败目录'));
         }
 
         // 次要操作折叠进「更多」：编辑 / 全量重扫 / 测试连接 / 日志 / 删除
