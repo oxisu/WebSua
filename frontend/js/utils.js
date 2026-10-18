@@ -73,6 +73,13 @@ export class ApiError extends Error {
     }
 }
 
+/**
+ * 401 回调钩子。由 auth.js 注册 —— 避免 utils 反向依赖具体登录实现
+ * （token 过期时任何一次请求都可能撞上 401，不该每个调用点各写一遍）。
+ */
+let onUnauthorized = null;
+export function setUnauthorizedHandler(fn) { onUnauthorized = fn; }
+
 export async function api(path, options = {}) {
     const { method = 'GET', body, signal } = options;
     const init = { method, signal, headers: {} };
@@ -84,6 +91,9 @@ export async function api(path, options = {}) {
     const text = await res.text();
     let data = {};
     try { data = text ? JSON.parse(text) : {}; } catch { /* 非 JSON */ }
+    if (res.status === 401 && data.auth_required && onUnauthorized) {
+        onUnauthorized();
+    }
     if (!res.ok || data.ok === false) {
         throw new ApiError(data.error || `请求失败 (${res.status})`, res.status);
     }

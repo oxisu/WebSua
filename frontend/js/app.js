@@ -11,6 +11,7 @@ import { SourceManager, icon, openModal, switchRow, field } from './sources.js';
 import { getSetting, setSetting, allSettings, onSettingsChange } from './settings.js';
 import { destroyActivePlayer } from './video-player.js';
 import { PlayQueue } from './queue.js';
+import { ensureAuth, initAuthGuard } from './auth.js';
 
 const app = {
     view: 'feed',
@@ -29,6 +30,8 @@ const app = {
    ============================================================ */
 async function boot() {
     initTheme();
+    initAuthGuard();            // 注册 401 钩子：令牌过期随时回到登录界面
+    await ensureAuth();         // 开启门禁时先弹密码框，通过后才继续
     buildShell();
     await loadProgress();
     await app.queue.load();     // 恢复持久化的播放队列（失败留空，不阻塞启动）
