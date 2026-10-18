@@ -1,6 +1,8 @@
-# WebSua · 多 WebDAV 视频流播放器
+# WebSua - 云刷
 
-把分散在多个 WebDAV 网盘里的视频，变成一条可以像刷短视频一样连续播放的视频流。
+> **WebSua** ("云刷") — Turn videos scattered across multiple WebDAV drives into
+> one endless, swipeable stream.
+> 多 WebDAV 视频流播放器：把分散在多个网盘里的视频，变成一条可以像刷短视频一样连续播放的视频流。
 
 - **零依赖**：前端原生 ES Module + CSS，后端 Python **纯标准库**，`python main.py` 双击即用
 - **多源**：每个 WebDAV 独立成一个文件源，各自扫描、各自筛选

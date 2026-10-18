@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""WebSua — 多 WebDAV 视频流播放器启动脚本。
+"""WebSua - 云刷 — 多 WebDAV 视频流播放器启动脚本。
 
 用法：
     python main.py              # 启动服务（不自动开浏览器）
@@ -75,7 +75,7 @@ def main() -> int:
         os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
     print(BANNER)
-    print("  多 WebDAV 视频流 · 三端自适应 · 明暗主题\n")
+    print("  WebSua - 云刷 · 多 WebDAV 视频流 · 三端自适应 · 明暗主题\n")
 
     db.get_conn()  # 初始化数据库
     port = find_port(args.host, args.port)
