@@ -17,6 +17,15 @@ import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PY = sys.executable
+
+# 英文区域的 Windows 控制台是 cp1252，打印中文会 UnicodeEncodeError 把整个
+# 测试跑挂掉。测试脚手架不能因为「打不出日志」而失败 —— 降级成替换字符。
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(errors="replace")
+    except Exception:
+        pass
+
 # 测试专用隔离实例 —— 绝不打用户的服务（8771/8899）和用户数据（data/）！
 # 曾发生过：测试在主端口上「清掉旧数据」把用户刚配好的 123 源全删了。
 PORT = 8792
@@ -92,6 +101,28 @@ def wait_port(port: int, timeout: float = 15.0) -> bool:
     return False
 
 
+def _open_log(name: str):
+    """以追加方式打开 data-test/<name>，用于接子进程输出。"""
+    os.makedirs(TEST_DATA_DIR, exist_ok=True)
+    return open(os.path.join(TEST_DATA_DIR, name), "ab")
+
+
+def dump_tail(path: str, lines: int = 25) -> None:
+    """打印日志尾部。CI 上只给退出码没法排障，必须把「为什么」打出来。"""
+    try:
+        with open(path, "rb") as f:
+            data = f.read()[-6000:]
+    except OSError:
+        return
+    text = data.decode("utf-8", "replace").strip()
+    if not text:
+        print(f"  --- {os.path.basename(path)} 是空的（进程可能没起来就退出了）---")
+        return
+    print(f"  --- {os.path.basename(path)} 末尾 {lines} 行 ---")
+    for line in text.splitlines()[-lines:]:
+        print("  | " + line)
+
+
 def run(name: str, args: list[str]) -> bool:
     print(f"\n{'#' * 62}\n# {name}\n{'#' * 62}")
     r = subprocess.run(args, cwd=ROOT, capture_output=True, text=True,
@@ -122,15 +153,21 @@ def main() -> int:
     kill_port(PORT)
     time.sleep(0.3)
     env = {**os.environ, "WEBSUA_DATA": TEST_DATA_DIR}
+    # 子进程输出落盘：本地调试可回看，CI 上「起不来」时也能打印尾部说明原因。
+    # 用 -u 关掉子进程的输出缓冲 —— 否则崩溃前打的东西全在缓冲区里，日志是空的。
+    dav_log = _open_log("fake-dav.log")
+    main_log = _open_log("main.log")
     PROCS.append(subprocess.Popen(
-        [PY, "tests/fake_dav.py", str(DAV_PORT), "good"], cwd=ROOT,
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+        [PY, "-u", "tests/fake_dav.py", str(DAV_PORT), "good"], cwd=ROOT,
+        stdout=dav_log, stderr=subprocess.STDOUT))
     PROCS.append(subprocess.Popen(
-        [PY, "main.py", "--port", str(PORT)], cwd=ROOT, env=env,
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+        [PY, "-u", "main.py", "--port", str(PORT)], cwd=ROOT, env=env,
+        stdout=main_log, stderr=subprocess.STDOUT))
 
     if not wait_port(PORT):
         print("主服务启动失败")
+        dump_tail(os.path.join(TEST_DATA_DIR, "main.log"))
+        dump_tail(os.path.join(TEST_DATA_DIR, "fake-dav.log"))
         cleanup()
         return 2
     print(f"  主服务就绪 http://127.0.0.1:{PORT}（隔离实例，用户服务 8771 不受影响）")
@@ -193,8 +230,8 @@ def main() -> int:
     kill_port(DAV_PORT)          # 确保端口真的释放（防残留/双绑定）
     time.sleep(0.3)
     PROCS[0] = subprocess.Popen(
-        [PY, "tests/fake_dav.py", str(DAV_PORT), "auth"], cwd=ROOT,
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        [PY, "-u", "tests/fake_dav.py", str(DAV_PORT), "auth"], cwd=ROOT,
+        stdout=_open_log("fake-dav-auth.log"), stderr=subprocess.STDOUT)
     time.sleep(1.0)
     results.append(("认证与错误场景", run(
         "Basic 认证 / 远端文件消失 / 密码不外泄",
