@@ -21,7 +21,7 @@ export class MediaGrid {
         this.filter = {
             sources: [], kinds: [], folder: '', folder_prefix: '',
             order: 'new', q: '', fav: false, history: false, progress: '',
-            duplicates: false,
+            duplicates: false, tags: [],
         };
         this.multiSelect = false;
         this.selected = new Set();   // 选中的 media id
@@ -134,6 +134,7 @@ export class MediaGrid {
         if (f.q) p.set('q', f.q);
         if (f.fav) p.set('fav', '1');
         if (f.progress) p.set('progress', f.progress);
+        if (f.tags && f.tags.length) p.set('tags', f.tags.join(','));
         return p.toString();
     }
 
@@ -226,7 +227,9 @@ export class MediaGrid {
                         const drop = g.items.slice(1).map(i => i.id);
                         if (!confirm(`保留 ${keep.folder} 下的这份，移除其余 ${drop.length} 份索引？\n（只删本地索引，不删远端文件）`)) return;
                         try {
-                            await api('/api/media/batch-remove', 'POST', { ids: drop });
+                            await api('/api/media/batch-remove', {
+                                method: 'POST', body: { ids: drop },
+                            });
                             showToast(`已移除 ${drop.length} 条重复索引`, 'ok');
                             await this.reset();
                         } catch (e) {

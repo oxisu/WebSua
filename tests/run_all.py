@@ -236,6 +236,9 @@ def main() -> int:
     results.append(("重复文件检测", run(
         "按文件名+大小分组 / 大小不同不算重复 / 源过滤 / 无重复返回空",
         [PY, "tests/test_duplicates.py"])))
+    results.append(("标签 / 自定义分类", run(
+        "标签 CRUD 与重名 / 媒体打标签全量覆盖 / 按标签筛媒体 / 计数与级联删除",
+        [PY, "tests/test_tags.py"])))
     results.append(("一键演示", run(
         "demo.py 零配置起假 WebDAV / 真可解码可拖动 / 数据隔离与护栏 / 重启幂等",
         [PY, "tests/test_demo.py"])))

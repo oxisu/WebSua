@@ -623,6 +623,7 @@ def api_media(c: Ctx) -> None:
         order=c.q("order", "new"), limit=limit, offset=offset,
         favorite_only=c.q("fav") == "1",
         progress_filter=c.q("progress") or None,
+        tag_ids=[int(x) for x in c.q_list("tags") if x.isdigit()] or None,
     )
     c.ok(media=[media_dto(r) for r in rows], total=total, limit=limit, offset=offset)
 
@@ -736,6 +737,67 @@ def api_duplicates(c: Ctx) -> None:
         })
     wasted = sum(g["total_size"] - g["size"] for g in groups)
     c.ok(groups=out, count=len(out), wasted=wasted)
+
+
+@route("GET", r"/api/tags")
+def api_list_tags(c: Ctx) -> None:
+    c.ok(tags=db.list_tags())
+
+
+@route("POST", r"/api/tags")
+def api_create_tag(c: Ctx) -> None:
+    d = c.json()
+    name = str(d.get("name") or "").strip()
+    if not name:
+        c.fail("标签名不能为空", 400)
+        return
+    tid = db.create_tag(name, str(d.get("color") or "#6c5ce7"))
+    if tid is None:
+        c.fail("标签已存在", 409)
+        return
+    c.ok(id=tid, name=name)
+
+
+@route("DELETE", r"/api/tags/(?P<tid>\d+)")
+def api_delete_tag(c: Ctx) -> None:
+    tid = int(c.params["tid"])
+    if not db.delete_tag(tid):
+        c.fail("标签不存在", 404)
+        return
+    c.ok(deleted=tid)
+
+
+@route("POST", r"/api/media/batch-tag")
+def api_batch_tag(c: Ctx) -> None:
+    """批量添加标签（合并语义）。body: {ids: [int], tag_ids: [int]}"""
+    d = c.json()
+    ids = [int(x) for x in (d.get("ids") or []) if str(x).isdigit()]
+    tag_ids = [int(x) for x in (d.get("tag_ids") or []) if str(x).isdigit()]
+    if not ids or not tag_ids:
+        c.fail("缺少 ids 或 tag_ids", 400)
+        return
+    n = db.add_tags_to_media(ids, tag_ids)
+    c.ok(added=n)
+
+
+@route("GET", r"/api/media/(?P<mid>\d+)/tags")
+def api_media_tags(c: Ctx) -> None:
+    mid = int(c.params["mid"])
+    got = db.get_media_tags([mid])
+    c.ok(tags=got.get(mid) or [])
+
+
+@route("POST", r"/api/media/(?P<mid>\d+)/tags")
+def api_set_media_tags(c: Ctx) -> None:
+    """设置某媒体的标签（全量覆盖）。body: {tag_ids: [int]}"""
+    mid = int(c.params["mid"])
+    if not db.get_media(mid):
+        c.fail("媒体不存在", 404)
+        return
+    d = c.json()
+    ids = [int(x) for x in (d.get("tag_ids") or [])]
+    db.set_media_tags(mid, ids)
+    c.ok(tags=db.get_media_tags([mid]).get(mid) or [])
 
 
 @route("GET", r"/api/progress")

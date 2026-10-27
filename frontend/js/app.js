@@ -7,6 +7,7 @@ import { loadProgress } from './progress.js';
 import { VideoFeed } from './feed.js';
 import { MediaGrid, toggleFav } from './grid.js';
 import { FolderTree } from './folder-tree.js';
+import { TagPanel } from './tag-panel.js';
 import { getThumbnail } from './thumbs.js';
 import { SourceManager, icon, openModal, switchRow, field } from './sources.js';
 import { getSetting, setSetting, allSettings, onSettingsChange } from './settings.js';
@@ -168,6 +169,10 @@ function buildShell() {
             onclick: () => batchAction('unfav'),
         }, '取消收藏'),
         el('button', {
+            class: 'btn btn-sm btn-ghost', id: 'batchTagBtn',
+            onclick: () => openTagPicker(),
+        }, '打标签'),
+        el('button', {
             class: 'btn btn-sm btn-danger', id: 'batchRemoveBtn',
             onclick: () => batchAction('remove'),
         }, '移除索引'));
@@ -277,11 +282,23 @@ function buildShell() {
         },
     });
     app.folderTree.load();
+
+    // 标签面板（目录树下方）
+    const tagPanelEl = el('div', { class: 'lib-tag-panel' });
+    folderTreeEl.append(tagPanelEl);
+    app.tagPanel = new TagPanel(tagPanelEl, {
+        onSelect: (tagId) => {
+            app.grid.setFilter({ tags: tagId ? [tagId] : [] });
+        },
+    });
+    app.tagPanel.load();
+
     app.srcMgr = new SourceManager(sourcesView, {
         onChanged: () => {
             refreshSources();
             app.grid?.reset();
             app.folderTree?.load();
+            app.tagPanel?.load();
         },
     });
     app.srcMgr.load();
@@ -334,12 +351,14 @@ async function batchAction(action) {
     }
     try {
         if (action === 'fav' || action === 'unfav') {
-            const r = await api('/api/media/batch-fav', 'POST', {
-                ids, fav: action === 'fav',
+            const r = await api('/api/media/batch-fav', {
+                method: 'POST', body: { ids, fav: action === 'fav' },
             });
             showToast(`已${labels[action]} ${r.changed} 条`, 'ok');
         } else if (action === 'remove') {
-            const r = await api('/api/media/batch-remove', 'POST', { ids });
+            const r = await api('/api/media/batch-remove', {
+                method: 'POST', body: { ids },
+            });
             showToast(`已移除 ${r.removed} 条索引`, 'ok');
         }
         app.grid.clearSelection();
@@ -347,6 +366,97 @@ async function batchAction(action) {
     } catch (e) {
         showToast('批量操作失败：' + e.message, 'err');
     }
+}
+
+/** 批量打标签：弹窗列出所有标签，勾选后应用到选中媒体。 */
+async function openTagPicker() {
+    const sel = app.grid?.selected;
+    if (!sel || !sel.size) return;
+    let tags = [];
+    try {
+        const r = await api('/api/tags');
+        tags = r.tags || [];
+    } catch (e) {
+        showToast('加载标签失败：' + e.message, 'err');
+        return;
+    }
+    const picked = new Set();
+    const listWrap = el('div', { class: 'tp-picker' });
+    if (!tags.length) {
+        listWrap.append(el('div', { class: 'ft-empty' },
+            '还没有标签，先在左侧「标签」区点 + 新建一个'));
+    }
+    for (const t of tags) {
+        const cb = el('input', { type: 'checkbox' });
+        cb.addEventListener('change', () => {
+            if (cb.checked) picked.add(t.id); else picked.delete(t.id);
+        });
+        listWrap.append(el('label', { class: 'tp-pick-row' },
+            cb,
+            el('span', {
+                class: 'tp-dot',
+                style: { background: t.color || '#6c5ce7' },
+            }),
+            el('span', {}, t.name)));
+    }
+
+    const nameInput = el('input', {
+        class: 'tp-new-input', placeholder: '或输入新标签名，回车新建并应用',
+    });
+    const doCreate = async () => {
+        const name = (nameInput.value || '').trim();
+        if (!name) return false;
+        try {
+            const r = await api('/api/tags', { method: 'POST', body: { name } });
+            if (r.id) {
+                await api('/api/media/batch-tag', {
+                    method: 'POST', body: { ids: [...sel], tag_ids: [r.id] },
+                });
+                showToast(`已给 ${sel.size} 条加上标签「${name}」`, 'ok');
+                app.grid.clearSelection();
+                app.tagPanel?.load();
+                return true;
+            }
+        } catch (e) {
+            showToast('新建标签失败：' + e.message, 'err');
+        }
+        return false;
+    };
+    nameInput.addEventListener('keydown', async e => {
+        if (e.key === 'Enter') {
+            const ok = await doCreate();
+            if (ok) document.querySelector('.modal-mask')?.remove();
+        }
+    });
+
+    const body = el('div', {}, listWrap, nameInput);
+    openModal({
+        title: `给选中的 ${sel.size} 条打标签`,
+        body,
+        actions: [
+            { label: '取消' },
+            {
+                label: '应用', primary: true,
+                onClick: async () => {
+                    if (!picked.size) {
+                        showToast('请先勾选标签', 'warn');
+                        return false;
+                    }
+                    try {
+                        await api('/api/media/batch-tag', {
+                            method: 'POST', body: { ids: [...sel], tag_ids: [...picked] },
+                        });
+                        showToast(`已给 ${sel.size} 条打上 ${picked.size} 个标签`, 'ok');
+                        app.grid.clearSelection();
+                        app.tagPanel?.load();
+                    } catch (e) {
+                        showToast('打标签失败：' + e.message, 'err');
+                        return false;
+                    }
+                },
+            },
+        ],
+    });
 }
 
 function tabBtn(view, label, ico) {

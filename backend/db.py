@@ -142,6 +142,24 @@ CREATE TABLE IF NOT EXISTS scan_diff (
     missing     TEXT DEFAULT '',
     created_at  INTEGER NOT NULL
 );
+
+-- 标签（自定义分类）：比固定「分类」灵活，但不做层级/嵌套，保持轻量
+CREATE TABLE IF NOT EXISTS tags (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT NOT NULL UNIQUE,
+    color       TEXT DEFAULT '#6c5ce7',
+    created_at  INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS media_tags (
+    media_id    INTEGER NOT NULL,
+    tag_id      INTEGER NOT NULL,
+    created_at  INTEGER NOT NULL,
+    PRIMARY KEY (media_id, tag_id),
+    FOREIGN KEY (media_id) REFERENCES media(id) ON DELETE CASCADE,
+    FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_media_tags_tag ON media_tags(tag_id);
 """
 
 
@@ -610,6 +628,7 @@ def query_media(
     offset: int = 0,
     favorite_only: bool = False,
     progress_filter: str | None = None,
+    tag_ids: list[int] | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     where, params = ["s.enabled = 1"], []
     if source_ids:
@@ -637,6 +656,11 @@ def query_media(
         where.append("p.position > 1 AND (p.finished IS NULL OR p.finished = 0)")
     elif progress_filter == "finished":
         where.append("p.finished = 1")
+    if tag_ids:
+        where.append(
+            f"m.id IN (SELECT media_id FROM media_tags WHERE tag_id IN "
+            f"({','.join('?' * len(tag_ids))}))")
+        params += list(tag_ids)
     clause = " WHERE " + " AND ".join(where)
     orders = {
         "new": "m.indexed_at DESC, m.id DESC",
@@ -978,6 +1002,91 @@ def delete_media(media_ids: list[int]) -> int:
         cur = conn.execute(f"DELETE FROM media WHERE id IN ({ph})", media_ids)
         conn.commit()
     return cur.rowcount
+
+
+# ---------------- 标签（自定义分类） ----------------
+
+def create_tag(name: str, color: str = "#6c5ce7") -> int | None:
+    """新建标签。重名返回 None（调用方按已存在处理）。"""
+    name = (name or "").strip()
+    if not name:
+        return None
+    with _lock:
+        conn = get_conn()
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO tags (name, color, created_at) VALUES (?,?,?)",
+            (name, color, int(time.time())))
+        conn.commit()
+    # INSERT OR IGNORE 未插入时 rowcount=0（lastrowid 会残留上次的值，不能用来判断）
+    if not cur.rowcount:
+        return None
+    return cur.lastrowid
+
+
+def list_tags() -> list[dict[str, Any]]:
+    """标签列表，带每个标签下的媒体数。"""
+    with _lock:
+        rows = get_conn().execute(
+            """SELECT t.id, t.name, t.color, t.created_at,
+                      COUNT(mt.media_id) AS media_count
+               FROM tags t LEFT JOIN media_tags mt ON mt.tag_id = t.id
+               GROUP BY t.id ORDER BY t.name""").fetchall()
+    return rows_to_dicts(rows)
+
+
+def delete_tag(tag_id: int) -> bool:
+    with _lock:
+        cur = get_conn().execute("DELETE FROM tags WHERE id = ?", (tag_id,))
+        get_conn().commit()
+    return cur.rowcount > 0
+
+
+def set_media_tags(media_id: int, tag_ids: list[int]) -> None:
+    """设置某媒体的标签（全量覆盖：不在列表里的会被解绑）。"""
+    with _lock:
+        conn = get_conn()
+        conn.execute("DELETE FROM media_tags WHERE media_id = ?", (media_id,))
+        now = int(time.time())
+        for tid in tag_ids:
+            conn.execute(
+                "INSERT OR IGNORE INTO media_tags (media_id, tag_id, created_at) VALUES (?,?,?)",
+                (media_id, tid, now))
+        conn.commit()
+
+
+def add_tags_to_media(media_ids: list[int], tag_ids: list[int]) -> int:
+    """批量给媒体添加标签（合并语义，不解绑已有标签）。返回新增关联数。"""
+    if not media_ids or not tag_ids:
+        return 0
+    now = int(time.time())
+    n = 0
+    with _lock:
+        conn = get_conn()
+        for mid in media_ids:
+            for tid in tag_ids:
+                cur = conn.execute(
+                    "INSERT OR IGNORE INTO media_tags (media_id, tag_id, created_at) VALUES (?,?,?)",
+                    (mid, tid, now))
+                n += cur.rowcount
+        conn.commit()
+    return n
+
+
+def get_media_tags(media_ids: list[int]) -> dict[int, list[dict]]:
+    """批量取媒体标签：{media_id: [{id,name,color}]}"""
+    if not media_ids:
+        return {}
+    ph = ",".join("?" * len(media_ids))
+    with _lock:
+        rows = get_conn().execute(
+            f"""SELECT mt.media_id, t.id, t.name, t.color
+                FROM media_tags mt JOIN tags t ON t.id = mt.tag_id
+                WHERE mt.media_id IN ({ph})""", media_ids).fetchall()
+    out: dict[int, list[dict]] = {}
+    for r in rows_to_dicts(rows):
+        out.setdefault(r["media_id"], []).append(
+            {"id": r["id"], "name": r["name"], "color": r["color"]})
+    return out
 
 
 def export_favorites() -> list[dict[str, Any]]:

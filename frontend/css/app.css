@@ -964,6 +964,97 @@ body.queue-collapsed .queue-toggle svg {
   justify-content: flex-end;
 }
 
+/* ---- 标签面板 ---- */
+.lib-tag-panel {
+  margin-top: var(--sp-2);
+  border-top: 1px solid var(--line-1);
+  padding-top: var(--sp-2);
+}
+.tag-panel { padding: 0 6px; }
+.tp-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 6px 4px;
+}
+.tp-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--fg-3);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.tp-add {
+  width: 20px; height: 20px;
+  display: flex; align-items: center; justify-content: center;
+  border: none; background: none; cursor: pointer;
+  color: var(--fg-3); font-size: 16px; line-height: 1;
+  border-radius: var(--r-sm);
+}
+.tp-add:hover { background: var(--bg-2); color: var(--fg-0); }
+.tp-tag {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  font-size: 13px;
+  color: var(--fg-1);
+  cursor: pointer;
+  border-radius: var(--r-sm);
+  margin: 0 6px;
+}
+.tp-tag:hover { background: var(--bg-2); color: var(--fg-0); }
+.tp-tag.tp-active { background: var(--brand-grad); color: #fff; }
+.tp-tag.tp-active .tp-count { color: rgba(255,255,255,0.7); }
+.tp-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.tp-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tp-count {
+  font-size: 11px;
+  color: var(--fg-3);
+  margin-left: auto;
+  flex-shrink: 0;
+}
+.tp-del {
+  border: none; background: none;
+  color: var(--fg-3); cursor: pointer;
+  font-size: 14px; line-height: 1;
+  padding: 0 2px;
+  flex-shrink: 0;
+}
+.tp-del:hover { color: #d63031; }
+
+/* ---- 标签选择弹窗 ---- */
+.tp-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: var(--sp-3);
+}
+.tp-pick-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  cursor: pointer;
+}
+.tp-new-input {
+  width: 100%;
+  padding: 8px 10px;
+  font-size: 13px;
+  border: 1px solid var(--line-1);
+  border-radius: var(--r-md);
+  background: var(--bg-2);
+  color: var(--fg-0);
+}
+
 .card {
   position: relative;
   border-radius: var(--r-lg);
