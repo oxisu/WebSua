@@ -179,6 +179,9 @@ def main() -> int:
     results.append(("一键演示", run(
         "demo.py 零配置起假 WebDAV / 真可解码可拖动 / 数据隔离与护栏 / 重启幂等",
         [PY, "tests/test_demo.py"])))
+    results.append(("发布资产", run(
+        "可复现 zip 与 SHA256 / 不含本机产物 / 解压可 import / CHANGELOG 发布说明 / Release 流程",
+        [PY, "tests/test_release.py"])))
 
     # 认证场景需要把假服务器切到 auth 模式
     print("\n  切换假服务器到认证模式…")
