@@ -1,0 +1,42 @@
+name: Release
+
+# 推 v* tag 时发布：回归不通过就不发布，发布说明直接取自 CHANGELOG.md。
+# 这样「CHANGELOG 里写了什么」与「Release 页面显示什么」永远一致。
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: 打包并发布 ${{ github.ref_name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: 发布前回归（不通过不发布）
+        run: python tests/run_all.py
+
+      - name: 打包（可复现 zip + SHA256）
+        run: python scripts/package.py --out dist
+
+      - name: 生成发布说明（取自 CHANGELOG）
+        run: python scripts/changelog_section.py "${{ github.ref_name }}" --out dist/notes.md
+
+      - name: 创建 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: dist/notes.md
+          fail_on_unmatched_files: true
+          files: |
+            dist/*.zip
+            dist/*.zip.sha256
