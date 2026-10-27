@@ -14,7 +14,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable
 
-from . import db, scanner, auth, backup
+from . import __version__, db, scanner, auth, backup
 from .config import FRONTEND_DIR
 from .stream import WebDAVError, guess_mime, iter_chunks, open_media_stream, parse_range
 from .webdav import WebDAVClient, make_client
@@ -109,7 +109,9 @@ class Ctx:
 
 
 class AppHandler(BaseHTTPRequestHandler):
-    server_version = "WebSua/1.0"
+    # 版本号跟随 backend/__init__.py —— 以前写死 1.0，用户 curl -I 看到的是
+    # 两年前的版本号，排查问题时极具误导性。
+    server_version = f"WebSua/{__version__}"
     protocol_version = "HTTP/1.1"
     routes: list[Route] = []
 
