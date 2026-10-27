@@ -12,6 +12,7 @@ venv/
 
 # 测试产物
 screenshots/
+dist/
 node_modules/
 package-lock.json
 
