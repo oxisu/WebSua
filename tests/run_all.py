@@ -19,10 +19,15 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PY = sys.executable
 
 # 英文区域的 Windows 控制台是 cp1252，打印中文会 UnicodeEncodeError 把整个
-# 测试跑挂掉。测试脚手架不能因为「打不出日志」而失败 —— 降级成替换字符。
+# 测试跑挂掉。规则：
+#   · 输出不是终端（CI 的 tee / 重定向到文件）→ 用 UTF-8，中文在日志里可读；
+#   · 输出是终端 → 保持控制台原生编码，只把编码错误降级成替换字符。
 for _s in (sys.stdout, sys.stderr):
     try:
-        _s.reconfigure(errors="replace")
+        if not _s.isatty():
+            _s.reconfigure(encoding="utf-8", errors="replace")
+        else:
+            _s.reconfigure(errors="replace")
     except Exception:
         pass
 
@@ -123,10 +128,19 @@ def dump_tail(path: str, lines: int = 25) -> None:
         print("  | " + line)
 
 
-def run(name: str, args: list[str]) -> bool:
+def run(name: str, args: list[str], timeout: float = 300) -> bool:
+    """跑一个套件。
+
+    timeout 是**必须**的：某个套件在特定平台（实测 macOS CI）卡住时，没有超时
+    就会把整个 job 拖到 25 分钟上限，什么信息都留不下。超时至少能说清「卡在哪套」。
+    """
     print(f"\n{'#' * 62}\n# {name}\n{'#' * 62}")
-    r = subprocess.run(args, cwd=ROOT, capture_output=True, text=True,
-                       encoding="utf-8", errors="replace")
+    try:
+        r = subprocess.run(args, cwd=ROOT, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=timeout)
+    except subprocess.TimeoutExpired:
+        print(f"  [FAIL] 超时：{timeout:.0f}s 内没有跑完（进程被强杀）")
+        return False
     out = (r.stdout or "") + (r.stderr or "")
     # 只打结果行，避免刷屏
     for line in out.splitlines():
