@@ -27,11 +27,20 @@ PROCS: list[subprocess.Popen] = []
 
 
 def kill_port(port: int) -> None:
-    """杀掉占用端口的进程（Windows）。
+    """杀掉占用端口的进程（跨平台）。
 
-    必须做：Windows 的 SO_REUSEADDR 允许两个进程同时 bind 同一端口，
+    Windows 必须做：Windows 的 SO_REUSEADDR 允许两个进程同时 bind 同一端口，
     残留的旧假服务器会让新启动的 auth 模式进程变成「影子」，请求全被旧进程接走。
+    Linux/macOS（CI）用 lsof 找 PID —— 之前只会调 netstat/taskkill，
+    在 runner 上必然失败，等于每次 CI 都带着残留进程跑。
     """
+    if os.name == "nt":
+        _kill_port_windows(port)
+    else:
+        _kill_port_posix(port)
+
+
+def _kill_port_windows(port: int) -> None:
     try:
         out = subprocess.run(["netstat", "-ano"], capture_output=True, text=True,
                              encoding="utf-8", errors="replace", timeout=10).stdout
@@ -49,6 +58,24 @@ def kill_port(port: int) -> None:
     for pid in pids:
         subprocess.run(["taskkill", "/F", "/PID", str(pid)],
                        capture_output=True, timeout=10)
+
+
+def _kill_port_posix(port: int) -> None:
+    import signal
+
+    try:
+        out = subprocess.run(["lsof", "-ti", f"tcp:{port}", "-sTCP:LISTEN"],
+                             capture_output=True, text=True, timeout=10).stdout
+    except Exception:
+        return
+    for line in (out or "").splitlines():
+        line = line.strip()
+        if not line.isdigit():
+            continue
+        try:
+            os.kill(int(line), signal.SIGKILL)
+        except OSError:
+            pass
 
 
 def wait_port(port: int, timeout: float = 15.0) -> bool:
@@ -119,6 +146,9 @@ def main() -> int:
         return 0
 
     results = []
+    results.append(("仓库级约束（语法/零依赖/CI 配置）", run(
+        "Python 3.9 语法兼容 / 注解延迟求值 / 运行时零依赖 / CI 配置不漂移",
+        [PY, "tests/test_compat.py"])))
     results.append(("端到端（正常服务器）", run(
         "端到端：扫描 → 索引 → Range 流 → 进度收藏",
         [PY, "tests/test_e2e.py"])))
