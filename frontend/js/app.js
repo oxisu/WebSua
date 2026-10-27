@@ -595,6 +595,67 @@ function openSettings() {
         return field(title, sel, desc);
     };
 
+    // ---- 数据备份：导出 / 导入（源、设置、收藏、进度）----
+    const bkPw = el('input', { type: 'checkbox' });
+    const bkFile = el('input', {
+        type: 'file', accept: '.json,application/json',
+        style: { display: 'none' },
+        onchange: async e => {
+            const f = e.target.files && e.target.files[0];
+            e.target.value = '';           // 允许重复选同一个文件
+            if (!f) return;
+            try {
+                const text = await f.text();
+                let data;
+                try { data = JSON.parse(text); }
+                catch { throw new Error('不是合法的 JSON 文件'); }
+                const r = await api('/api/backup/import', { method: 'POST', body: data });
+                const s = r.summary || {};
+                showToast(`导入完成：源 +${s.sources_added || 0} / 更新 ${s.sources_updated || 0}，`
+                    + `收藏 ${s.favorites_restored || 0}，进度 ${s.progress_restored || 0}`, 'ok');
+                if (s.sources_need_password) {
+                    showToast(`${s.sources_need_password} 个数据源未包含密码，请手动补填`, 'warn');
+                }
+                if ((s.favorites_skipped || 0) + (s.progress_skipped || 0) > 0) {
+                    showToast(`${(s.favorites_skipped || 0) + (s.progress_skipped || 0)} 条记录因`
+                        + '媒体未扫描而跳过，扫描后可再次导入', 'warn');
+                }
+                await refreshSources();
+                if (app.srcMgr) await app.srcMgr.load();
+                if (app.feed && app.feed.items.length) app.feed.setFilter(currentSourceFilter());
+            } catch (err) {
+                showToast(err.message || '导入失败', 'err');
+            }
+        },
+    });
+    const bkExport = el('button', {
+        class: 'btn btn-sm btn-ghost',
+        onclick: async () => {
+            try {
+                const res = await fetch('/api/backup/export' + (bkPw.checked ? '?passwords=1' : ''));
+                if (!res.ok) throw new Error(`导出失败 (${res.status})`);
+                const blob = await res.blob();
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(blob);
+                a.download = `websua-backup-${new Date().toISOString().slice(0, 19)
+                    .replace(/[-:T]/g, '')}.json`;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                setTimeout(() => URL.revokeObjectURL(a.href), 1500);
+                showToast('已导出配置' + (bkPw.checked ? '（含 WebDAV 密码）' : ''), 'ok');
+            } catch (e) {
+                showToast(e.message || '导出失败', 'err');
+            }
+        },
+    }, '导出配置');
+    const bkImport = el('button', {
+        class: 'btn btn-sm btn-ghost', onclick: () => bkFile.click(),
+    }, '导入配置');
+    const backupRow = el('div', { class: 'backup-row' },
+        bkExport, bkImport, bkFile,
+        el('label', { class: 'backup-pw' }, bkPw, '导出时包含 WebDAV 密码'));
+
     const body = el('div', {},
         mkSwitch('autoNext', '自动连播', '播放完或出错时自动跳到下一个视频（刷视频模式）'),
         mkSwitch('resumeLast', '恢复上次播放', '打开应用时恢复上次的播放源、顺序与当前进度'),
@@ -602,7 +663,11 @@ function openSettings() {
         mkSwitch('debugLog', '播放器调试日志', '在播放器「更多」菜单里提供调试日志开关'),
         el('div', { class: 'settings-sep' }),
         mkPageSelect('pageFeed', '视频流每页条数', '视频流滚动到底时每次加载的条数', [12, 24, 48, 96]),
-        mkPageSelect('pageLibrary', '媒体库每页条数', '媒体库网格滚动到底每次加载的条数', [24, 48, 96, 192]));
+        mkPageSelect('pageLibrary', '媒体库每页条数', '媒体库网格滚动到底每次加载的条数', [24, 48, 96, 192]),
+        el('div', { class: 'settings-sep' }),
+        field('数据备份', backupRow,
+            '导出数据源、设置、收藏与观看进度；导入为<strong>合并</strong>模式，不会删除现有数据。'
+            + '收藏/进度按「源地址 + 根路径 + 远端路径」匹配，需先扫描出对应媒体才能真正恢复。'));
 
     openModal({
         title: '设置',

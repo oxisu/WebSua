@@ -2025,3 +2025,19 @@ body.queue-collapsed .queue-toggle svg {
   width: 100%;
   justify-content: center;
 }
+
+/* ---- 设置 · 数据备份 ---- */
+.backup-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+.backup-pw {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--fg-3);
+  cursor: pointer;
+}
