@@ -7,6 +7,25 @@
 
 ## [未发布]
 
+## [1.11.1] - 2026-10-27
+
+### 修复
+
+- **macOS / Windows 上服务起不来（CI 首次暴露）**：标准库 `HTTPServer` 在绑定端口时会
+  调 `socket.getfqdn()` **反查 DNS**，在受限网络与 GitHub runner 上会卡几十秒，
+  现象是「进程活着、端口不通、日志停在启动横幅」。主服务与假 WebDAV 两个服务器都跳过
+  这一步，直接用监听地址作为 `server_name`。
+- **英文区域 Windows 上打不开**：控制台编码是 cp1252，打印中文抛 `UnicodeEncodeError`
+  直接退出。入口脚本把编码错误降级成替换字符，宁可显示 `?` 也不能起不来。
+- **CI 失败时看不到原因**：回归的子进程输出改为落盘到 `data-test/*.log`，失败时打印日志尾部；
+  并把日志尾部转成 GitHub annotation（Actions 日志要登录才能看，annotation 通过 API 公开可读）。
+
+### 新增
+
+- `scripts/ci_diag.py`：把任意日志尾部转成 annotation，跨平台、不依赖 heredoc。
+- `test_compat.py` 增加 4 项启动路径护栏：绑定不反查 DNS（用 sleep 5 的假 `getfqdn` 验证）、
+  入口脚本在 `PYTHONIOENCODING=cp1252` 下不崩。
+
 ## [1.11.0] - 2026-10-27
 
 ### 新增
