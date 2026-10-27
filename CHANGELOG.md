@@ -7,6 +7,19 @@
 
 ## [未发布]
 
+## [1.17.0] - 2026-10-27
+
+### 新功能（P1-2 视图过滤）
+
+- **进度筛选**：媒体库新增「未看 / 有进度 / 已看完」三个筛选，
+  与现有「全部 / 历史 / 收藏」打通。
+- 后端 `query_media()` 新增 `progress_filter` 参数
+  （`unwatched` / `in_progress` / `finished`），API 形式：
+  `GET /api/media?progress=unwatched`。
+- 修复：`query_media` 的 COUNT 查询缺 `LEFT JOIN progress`，
+  进度过滤时报 `no such column`。
+
+
 ## [1.16.0] - 2026-10-27
 
 ### 新功能（P1-1 文件夹树浏览）
