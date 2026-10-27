@@ -15,8 +15,6 @@ from __future__ import annotations
 import os
 import sys
 
-LIMIT = 3500          # 太长的 annotation 会被截断，留点余量
-
 # 这个脚本专门在 Windows 上跑（CI 的 windows job），而英文区域的控制台是
 # cp1252。这里直接按 UTF-8 输出：annotation 是给 GitHub 读的，UTF-8 才能让
 # 中文套件名可读；只降级编码错误，绝不让「诊断自己」变成新的失败。
@@ -28,17 +26,27 @@ for _s in (sys.stdout, sys.stderr):
 
 
 def pick(data: str) -> str:
-    """优先给「失败汇总 + Traceback」，否则退回整个尾部。
+    """拼一条「能直接看懂」的诊断：先给失败汇总，再给失败用例详情。
 
-    日志尾部往往只剩汇总列表，真正的原因（Traceback / 哪个用例 FAIL）在前面
-    几十行。这里把关键段落挑出来，避免 annotation 只说「有失败」不说「哪失败」。
+    日志尾部往往只剩一堆 [PASS]，真正有用的「哪套失败 / 为什么失败」被挤掉；
+    annotation 又有长度上限，所以这里主动挑行并控制篇幅。
     """
-    tail = data[-LIMIT:]
-    keys = ("Traceback", "[FAIL]", "✗", "存在失败项", "主服务启动失败")
-    hits = [ln for ln in tail.splitlines() if any(k in ln for k in keys)]
-    if hits:
-        return "\n".join(hits[-25:])
-    return tail
+    lines = [ln.rstrip() for ln in data.splitlines()]
+    summary = [ln for ln in lines
+               if ln.strip().startswith(("✗ 失败", "✓ 通过", "全部通过", "存在失败项"))]
+    details = [ln for ln in lines if ln.strip().startswith(("[FAIL]", "Traceback"))][:20]
+
+    out = []
+    if summary:
+        out.append("【套件汇总】")
+        out.extend(summary[-13:])
+    if details:
+        out.append("【失败详情】")
+        out.extend(details)
+    if not out:
+        out.append("【日志尾部】")
+        out.append(data[-1200:])
+    return "\n".join(out)
 
 
 def main() -> int:
