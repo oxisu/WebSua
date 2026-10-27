@@ -49,13 +49,7 @@ jobs:
       # 而 annotation 通过 check-runs API 是公开可读的 —— 排障时救命。
       - name: 回归失败诊断
         if: failure()
-        shell: bash
-        run: |
-          python - <<'PY'
-          data = open('run-all.log', encoding='utf-8', errors='replace').read()[-3500:]
-          data = data.replace('%', '%25').replace('\r', '').replace('\n', '%0A')
-          print(f"::error title=回归失败诊断（日志尾部）::{data}")
-          PY
+        run: python scripts/ci_diag.py run-all.log
 
       - name: 失败时上传扫描日志与子进程输出
         if: failure()

@@ -266,3 +266,10 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         cleanup()
         sys.exit(130)
+    except Exception:
+        # 脚手架自己出 bug 时也要留下痕迹：CI 上只给一个 exit code 是排不了障的
+        import traceback
+
+        traceback.print_exc()
+        cleanup()
+        sys.exit(1)
