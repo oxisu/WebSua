@@ -398,3 +398,142 @@ WebDAV 地址是用户显式配置的，客户端应该直连它；环境代理�
 | 数万文件扫描太慢 | `WEBSUA_SCAN_RATE=0.1`（VIP 网盘限流压力小），秒 10 请求 |
 | 扫描出的数量与网盘对不上 | 看 `scan.log` 里的「目录列举失败」行，失败目录重扫即可补全 |
 | 播放偶发卡顿/报错 | 三层兜底已自动处理（stream 重试 → 播放器重试 → proxy 端点）；频繁出现查日志里的「播放失败」行 |
+
+---
+
+## 十二、P1 阶段的坑：假按钮、静默降级与测试隔离
+
+这一章记录 P1（媒体库增强）阶段的真实事故。共同点是：**它们都不报错，
+只是「看起来能用、实际没生效」** —— 比崩溃更难发现。
+
+### 12.1 「假按钮」：`api()` 传参写错，静默退化成 GET
+
+前端封装的签名是：
+
+```js
+export async function api(path, options = {}) {
+    const { method = 'GET', body, signal } = options;
+    ...
+}
+```
+
+但我在 v1.18.0 批量操作里写成了：
+
+```js
+await api('/api/media/batch-fav', 'POST', { ids, fav });   // ❌
+```
+
+`'POST'` 被当成 `options` 对象解构 —— 字符串没有 `method` / `body` 属性，
+于是 `method` 取默认值 `'GET'`、`body` 是 `undefined`。请求照发，
+后端返回 405 或空列表，**界面按钮点了完全没反应，控制台也不报错**。
+
+**教训**：
+
+- **静态检查发现不了这类 bug**（语法完全合法），只有真点一遍界面才会暴露
+- 这类「假按钮」比崩溃更危险：用户以为操作成功了
+- 根本解法是在 `api()` 里对 `options` 做类型兜底 —— 传字符串就明确报错：
+
+```js
+export async function api(path, options = {}) {
+    if (typeof options === 'string') {
+        throw new Error(`api() 第二参数必须是对象，收到字符串 "${options}"`);
+    }
+    ...
+}
+```
+
+（本项目后来修了 8 处调用点，但更稳妥的还是让封装自己拦住。）
+
+### 12.2 `INSERT OR IGNORE` 的 `lastrowid` 会残留
+
+写标签去重时踩到：
+
+```python
+cur = conn.execute(
+    "INSERT OR IGNORE INTO tags (name, color, created_at) VALUES (?,?,?)", ...)
+return cur.lastrowid or None     # ❌ 重名被忽略时，lastrowid 是「上一次成功插入」的 id
+```
+
+`INSERT OR IGNORE` 没真的插入时，`lastrowid` **不是 0，而是上一条插入的 rowid**。
+所以「重名」判断完全失效，函数返回了一个看起来合法的旧 id。
+
+正确写法：
+
+```python
+if not cur.rowcount:      # ✅ 0 表示被 IGNORE 了
+    return None
+return cur.lastrowid
+```
+
+**教训**：判断「这条 INSERT 到底生效没有」，用 `rowcount`，不要用 `lastrowid`。
+
+### 12.3 COUNT 查询必须和主查询 JOIN 同样的表
+
+给媒体列表加进度筛选（未看 / 有进度 / 已看完）时，WHERE 里引用了 `p.position`，
+但 COUNT 那条 SQL 是：
+
+```python
+f"SELECT COUNT(*) c FROM media m JOIN sources s ON s.id = m.source_id{clause}"
+```
+
+—— 没 JOIN `progress`，于是报 `no such column: p.position`。
+
+**教训**：分页查询的「总数」和「当前页」必须**共享同一套 JOIN**。
+改 WHERE 条件时，两条 SQL 要一起改。这类 bug 只在「带该筛选条件查询」时才炸，
+不带条件跑得好好的，所以容易漏测。
+
+### 12.4 测试隔离的三个坑
+
+写 P1 测试时连着踩了三个：
+
+**① `bulk_upsert_media` 默认是「全量替换」**
+
+```python
+db.bulk_upsert_media(sid, items)                 # 不在 items 里的旧条目会被删掉！
+db.bulk_upsert_media(sid, extra, partial=True)   # ✅ 追加
+```
+
+测试里第二次调用想「加一条数据」，结果把第一次的全删了 —— 表现为计数对不上。
+
+**② 测试之间要清库**
+
+同一个测试文件里多个用例共用同一个 DB（模块级 `WEBSUA_DATA`），
+数据会累积：第一个用例插 6 条，第二个用例就变成 12 条。
+每个用例开头加 `_clean()`（清 media / sources / favorites / progress）。
+
+**③ 自增 ID 不能硬编码**
+
+清库再插入后，id 从上次的最大值继续自增，不是从 1 开始。
+测试里写 `db.delete_media([1, 2, 3])` 会打到错误的行（甚至外键报错）。
+正确做法：`_setup()` 返回实际 id 列表，测试用 `ids[0]`、`ids[:3]` 引用。
+
+### 12.5 括号计数法检查 JS 语法不可靠
+
+想快速验证 JS 有没有语法错误，我写了「数括号配对」的脚本 —— 结果误报：
+字符串里含 `(` `)`（比如 `el('div', {...})` 里的中文、模板串）会打乱计数。
+
+可靠做法是用 Node 真解析：
+
+```bash
+cp frontend/js/grid.js /tmp/_chk.mjs && node --check /tmp/_chk.mjs
+```
+
+**教训**：语法检查要用真的 parser，不要自己数字符。
+
+### 12.6 聚合统计要避开 N+1
+
+按源统计最初想「查出所有源，再对每个源查一次媒体数」—— 源一多就是 N+1。
+改成一条聚合 SQL：
+
+```sql
+SELECT s.id, COUNT(m.id), SUM(CASE WHEN m.kind='video' THEN 1 ELSE 0 END), ...
+FROM sources s LEFT JOIN media m ON m.source_id = s.id
+GROUP BY s.id
+```
+
+目录数、失败目录数各一条 GROUP BY 查询，在 Python 里按 `source_id` 拼回去 ——
+总共 3 条查询搞定任意数量的源。
+
+**附带设计**：前端拉统计失败时**只丢数字，不让页面挂掉**
+（`try { ... } catch { this.statsById = this.statsById || {} }`）。
+锦上添花的功能不能成为单点故障。

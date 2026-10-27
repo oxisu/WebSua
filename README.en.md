@@ -14,6 +14,7 @@
 - **TG cover art**: Auto-detects thumbnails next to Telegram-exported videos (per-source toggle)
 - **Subtitles**: Auto-links `.srt` / `.vtt` with the same name in the same folder; front-end converts SRT → VTT. Toggle / font size / delay
 - **Scan control**: Rate limiting, exponential backoff retries, pause / resume / stop, detailed logs
+- **Media library enhancements**: Folder tree browsing, progress filters (unwatched / in progress / finished), batch operations, duplicate detection, custom tags, aggregated source stats
 - **License**: [GNU AGPL-3.0](./LICENSE) — redistribution or network service must open-source under the same license
 
 > **Currently only WebDAV scanning is supported.** For the design doc on "TB-scale cloud drive
@@ -218,6 +219,71 @@ Settings has "Data Backup": bundles **source configs, front-end settings, favori
 
 ---
 
+### Folder Tree Browsing
+
+The folder tree on the left of the media library browses by **directory hierarchy**,
+with a media count on every level:
+
+- Clicking a node filters the grid to that directory (**including subdirectories**),
+  via the backend `folder_prefix` prefix match
+- Auto-collapses into a single bar on phones, only expanding when needed
+- Refreshes automatically when sources change (new folders appear after scanning)
+
+WebDAV users are used to finding content by folder — search / pagination doesn't
+cover that mental model.
+
+### View Filtering
+
+Media library filter bar (All / **Unwatched** / **In Progress** / **Finished** / History / Favorites):
+
+| Filter | Rule |
+| --- | --- |
+| Unwatched | No progress record, or progress ≤ 1s |
+| In Progress | Has progress, not finished |
+| Finished | `finished` flag set |
+
+Combines with favorites, search, and the folder tree.
+
+### Batch Operations
+
+Click "Multi-select" in the filter bar to enter multi-select mode. Cards become
+checkable (blue outline + ✓ badge) and a floating action bar appears:
+
+- **Select all / Invert / Clear**
+- **Batch favorite / unfavorite** (idempotent)
+- **Batch tag**: pick tags in a dialog and apply to all selected items,
+  or type a new tag name to create-and-apply
+- **Batch remove from index**: **local index only, never deletes remote files**,
+  with a confirmation dialog
+
+### Duplicate Detection
+
+Groups duplicates by **filename + size**:
+
+- **Deliberately no full hashing** — hashing requires pulling every file in full,
+  which is a disaster for TB-scale drives. (name, size) already covers the vast
+  majority of real duplicates (copied backups, re-downloads)
+- Each group shows the source and folder of every copy, with
+  "**Keep 1, remove N**" to clean up extra index entries in one click
+- Shows "N duplicate groups, ~X reclaimable"; same-name files with
+  **different sizes are not** considered duplicates
+
+### Tags / Custom Categories
+
+More flexible than a fixed "category", but **no nesting** (kept lightweight):
+
+- Tag panel on the left: lists tags with media counts, click to filter,
+  create / delete supported
+- One media item can carry multiple tags; deleting a tag or media cascades cleanly
+- Deleting a tag **only deletes the tag, not the media**
+
+### Aggregated Source Stats
+
+Each source card shows: videos / images / audio / total size / **folder count**,
+plus the failed-directory badge and last scan time. Aggregated in a single SQL
+query — no N+1 as sources grow. If the stats request fails, you just lose the
+numbers — **the page still works**.
+
 ## Project Structure
 
 ```
@@ -231,7 +297,7 @@ WebSua/
 │   ├── pan123.py           # Planned: 123 Open API client (token refresh + file/list pagination)
 │   ├── scanner.py          # Scan tasks: thread + pause/cancel + TG cover matching + logs
 │   ├── stream.py           # HTTP Range parsing and stream forwarding
-│   └── server.py           # HTTP server: 24 REST routes + static + media streaming
+│   └── server.py           # HTTP server: 50 routes + static + media streaming + auth middleware
 ├── frontend/
 │   ├── index.html          # Inline theme pre-execution script (anti-flash)
 │   ├── css/
@@ -242,7 +308,9 @@ WebSua/
 │       ├── app.js          # Entry: routing, sidebar, queue panel, settings modal
 │       ├── feed.js         # Vertical video feed (windowed mount + IntersectionObserver + queue nav)
 │       ├── queue.js        # Play queue: natural-order gen / drag / loop / shuffle / persistence
-│       ├── grid.js         # Media grid (pagination + thumbnails)
+│       ├── grid.js         # Media grid (pagination + thumbnails + multi-select + dup groups)
+│       ├── folder-tree.js  # Folder tree sidebar (recursive tree + expand/collapse + counts)
+│       ├── tag-panel.js    # Tag panel (custom categories: list / filter / create / delete)
 │       ├── sources.js      # Source management (state machine + fine-grained DOM updates)
 │       ├── video-player.js # Player (watchdogs + endpoint fallback + more menu)
 │       ├── thumbs.js       # Video frame capture (concurrent limit 3 + failure cache)
@@ -265,6 +333,12 @@ WebSua/
 │   ├── test_access.py       # LAN auth gate 32 items
 │   ├── test_access_ui.js    # Auth login UI 9 items (self-contained)
 │   ├── test_backup.py       # Config import/export 27 items
+│   ├── test_folder_tree.py  # Folder tree 22 items (nested aggregation / prefix match / source filter)
+│   ├── test_view_filter.py  # View filter 9 items (unwatched / in progress / finished)
+│   ├── test_batch_ops.py    # Batch ops 18 items (idempotent fav / remove cascades / empty safe)
+│   ├── test_duplicates.py   # Duplicate detection 13 items (grouping / size mismatch / filter)
+│   ├── test_tags.py         # Tags 24 items (CRUD / override / filter / counts + cascade)
+│   ├── test_stats_agg.py    # Aggregated stats 20 items (per-type / folders / failed dirs)
 │   ├── test_backup_ui.js    # Backup UI 9 items (self-contained)
 │   ├── test_demo.py         # Demo regression 30 items
 │   ├── test_release.py      # Release assets 38 items
@@ -321,7 +395,19 @@ WebSua/
 | GET | `/api/stream/{id}` | Media stream (Range, `?dl=1` to download) |
 | GET | `/api/proxy/{id}` | Fallback endpoint (no Range, full body) |
 | GET | `/api/poster/{id}` | TG same-name cover (404 if none) |
+| GET | `/api/folder-tree` | Folder tree (grouped by source, `count` / `total_size` per level) |
+| GET | `/api/duplicates` | Duplicate groups (`name`+`size`, **no hashing**), incl. reclaimable `wasted` |
+| GET/POST | `/api/tags` | Tag list (with media count) / create (409 on duplicate name) |
+| DELETE | `/api/tags/{id}` | Delete tag (**tag only, not the media**) |
+| GET/POST | `/api/media/{id}/tags` | Get / set tags for a media item (**full overwrite**) |
+| POST | `/api/media/batch-fav` | Batch favorite / unfavorite (idempotent) |
+| POST | `/api/media/batch-remove` | Batch remove from index (**DB only, never deletes remote files**) |
+| POST | `/api/media/batch-tag` | Batch add tags (**merge semantics**, keeps existing) |
+| GET | `/api/stats/sources` | Aggregated per-source stats (per-type counts / size / folders / failed dirs) |
 | GET/POST | `/api/settings` | Server settings (reserved) |
+
+> `/api/media` also accepts `folder_prefix` (directory prefix match, includes subdirectories),
+> `progress` (`unwatched` / `in_progress` / `finished`), and `tags` (tag ids, e.g. `1,2`).
 
 ---
 
@@ -367,10 +453,14 @@ The most valuable part of this project isn't the feature list — it's the **pit
 
 **Q: Want precise thumbnails?** Current front-end frame capture is at 1 second. TG cover mode uses the exported image directly. FFmpeg-level precision would require backend dependencies — intentionally avoided to keep zero dependencies.
 
+**Q: How do I clean up duplicate backups?** Switch the media library to the "Duplicates" filter — groups are listed by **filename + size**, and each group offers "Keep 1, remove rest". **Local index only, remote files untouched**, with a confirmation dialog. Note: file hashing is deliberately not used — hashing requires pulling every file in full, which TB-scale drives can't handle. The trade-off: duplicates with identical content but different filenames won't be detected.
+
+**Q: Tags vs favorites?** Favorites is a single toggle (on/off). Tags are custom categories — one media item can carry multiple tags (e.g. "Series", "Watch later") and you can filter by tag. Deleting a tag removes only the tag itself, never the media.
+
 ## Testing
 
 ```bash
-python tests/run_all.py            # One command: isolated server → 13 backend suites → auto cleanup
+python tests/run_all.py            # One command: isolated server → 19 backend suites → auto cleanup
 python tests/run_all.py --env-only # Start isolated test env only (for debugging individual tests)
 python tests/test_compat.py        # Repo constraints (3.9 syntax / zero deps / CI config drift)
 python tests/test_release.py       # Release assets (reproducible zip / checksum / CHANGELOG extraction)
@@ -392,7 +482,7 @@ Version cadence is **one feature, one commit, one tag**: each feature gets a pat
 
 ```bash
 python scripts/package.py                 # → dist/WebSua-<version>.zip + .zip.sha256
-python scripts/changelog_section.py v1.12.0   # Extract version notes (for Release body)
+python scripts/changelog_section.py v1.21.0   # Extract version notes (for Release body)
 ```
 
 Two deliberate packaging choices:

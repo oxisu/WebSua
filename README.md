@@ -15,6 +15,8 @@
 - **TG 封面**：自动识别 Telegram 导出视频旁的同名封面图（可开关）
 - **字幕**：自动关联同目录同名 `.srt`/`.vtt`，前端转 VTT 播放，支持开关 / 字号 / 延迟
 - **扫描可控**：限流、指数退避重试、暂停 / 继续 / 停止、日志可查
+- **媒体库增强**：文件夹树浏览、进度筛选（未看/有进度/已看完）、批量操作、
+  重复文件检测、标签自定义分类、按源聚合统计
 - **开源协议**：[GNU AGPL-3.0](./LICENSE) —— 二次分发或对外提供网络服务时，须以同一协议开放源码
 
 > 📌 **当前版本只支持 WebDAV 一种扫描协议。** 关于「TB 级网盘改用官方 API 扫描」的
@@ -254,6 +256,60 @@ JSON 文件，换机器或重装后一键恢复。这是「测试清空过用户
 - 键盘：空格/K 播放暂停，←→ 快退快进 10s，0-9 跳百分比，M 静音，F 全屏，L 循环，R 旋转
 - 双击左右侧快退快进，画中画，截图（canvas 导出 PNG），复制直链，速度 0.25x-3x
 
+### 文件夹树浏览
+
+媒体库左侧按 WebDAV **目录层级**浏览，每层显示媒体计数：
+
+- 点击节点即按该目录（**含子目录**）过滤网格，后端用 `folder_prefix` 前缀匹配
+- 手机端自动折叠成一条横条，展开才占空间
+- 目录树数据源变化时自动刷新（扫描完会看到新目录）
+
+WebDAV 用户习惯按目录找内容，搜索 / 分页补不上这个心智。
+
+### 视图过滤
+
+媒体库筛选栏（全部 / **未看** / **有进度** / **已看完** / 历史 / 收藏）：
+
+| 筛选 | 判定 |
+| --- | --- |
+| 未看 | 无进度记录，或进度 ≤ 1s |
+| 有进度 | 有进度且未看完 |
+| 已看完 | `finished` 标记为真 |
+
+可与收藏、搜索、目录树叠加使用。
+
+### 批量操作
+
+点筛选栏「多选」进入多选模式，卡片可勾选（蓝色描边 + ✓ 徽章），底部浮动操作栏：
+
+- **全选 / 反选 / 清除**
+- **批量收藏 / 取消收藏**（幂等）
+- **批量打标签**：弹窗勾选标签应用到所有选中项，也可输入新标签名「新建并应用」
+- **批量移除索引**：**只删本地索引，不删远端文件**，操作前二次确认
+
+### 重复文件检测
+
+按「**文件名 + 大小**」分组找重复组：
+
+- **刻意不上全量哈希** —— 算哈希要把每个文件整个拉一遍，TB 级网盘是灾难；
+  (name, size) 已能覆盖绝大多数真实重复（复制备份、重复下载）
+- 重复组显示每份所在源与目录，「**保留 1 移除 N**」一键清理多余索引
+- 顶部显示「共 N 组重复，可释放约 X」；大小不同的同名文件**不算重复**
+
+### 标签 / 自定义分类
+
+比固定「分类」灵活，但**不做层级嵌套**（保持轻量）：
+
+- 媒体库左侧标签区：列出标签带媒体数，点击筛选，支持新建 / 删除
+- 一个媒体可打多个标签；删除标签或媒体时关联自动级联清理
+- 删除标签**只删标签，不删媒体**
+
+### 按源聚合统计
+
+数据源卡片展示每个源的：视频 / 图片 / 音频 / 总大小 / **目录数**；
+卡片上另有失败目录徽标与最近扫描时间。聚合统计用一条 SQL 取完，
+源多时不会 N+1。统计接口挂了也只是没数据，**不会让页面打不开**。
+
 ---
 
 ## 目录结构
@@ -269,7 +325,7 @@ WebSua/
 │   ├── pan123.py           # 规划中：123 Open API 客户端（token 刷新 + file/list 分页）
 │   ├── scanner.py          # 扫描任务：线程 + 暂停/取消 + TG 封面匹配 + 日志
 │   ├── stream.py           # HTTP Range 解析与流转发
-│   └── server.py           # HTTP 服务：24 个 REST 路由 + 静态资源 + 媒体流
+│   └── server.py           # HTTP 服务：50 个路由 + 静态资源 + 媒体流 + 统一鉴权中间件
 ├── frontend/
 │   ├── index.html          # 内联主题预执行脚本（防闪白）
 │   ├── css/
@@ -280,7 +336,9 @@ WebSua/
 │       ├── app.js          # 入口：路由、侧栏、队列面板、设置弹窗
 │       ├── feed.js         # 竖屏视频流（窗口化挂载 + IntersectionObserver + 队列导航）
 │       ├── queue.js        # 播放队列：目录自然序生成 / 拖拽 / 循环 / 随机 / 持久化
-│       ├── grid.js         # 媒体网格（分页 + 缩略图）
+│       ├── grid.js         # 媒体网格（分页 + 缩略图 + 多选 + 重复组）
+│       ├── folder-tree.js  # 文件夹树侧栏（递归树 + 展开收起 + 计数）
+│       ├── tag-panel.js    # 标签面板（自定义分类：列表/筛选/新建/删除）
 │       ├── sources.js      # 数据源管理（状态机 + 细粒度 DOM 更新）
 │       ├── video-player.js # 播放器（看门狗 + 端点回退 + 更多菜单）
 │       ├── thumbs.js       # 视频截帧（并发限 3 + 失败缓存）
@@ -290,7 +348,7 @@ WebSua/
 ├── tests/
 │   ├── fake_dav.py         # 假 WebDAV（good/auth/norange 三模式，含 24 个批量目录 + 12 集番剧目录；MTIMES 可按文件覆盖 mtime）
 │   ├── run_all.py          # 一键回归：自动起服务、切模式、清端口、跑完清理（Windows/POSIX 都支持）
-│   ├── test_compat.py      # 仓库级约束 22 项（3.9 语法兼容/注解延迟求值/运行时零依赖/CI 配置不漂移）
+│   ├── test_compat.py      # 仓库级约束 26 项（3.9 语法兼容/注解延迟求值/运行时零依赖/CI 配置不漂移）
 │   ├── browser-env.js      # 跨平台探测 Chromium（Win/Linux/macOS + PLAYWRIGHT_CHROME 覆盖）
 │   ├── test_e2e.py         # 端到端 36 项
 │   ├── test_norange.py     # 服务器忽略 Range 时的本地裁剪 17 项
@@ -304,6 +362,12 @@ WebSua/
 │   ├── test_access_ui.js    # 门禁登录界面 9 项（自包含；遮罩/错误提示/登录后放行）
 │   ├── test_backup.py       # 配置导入导出 27 项（脱敏/跨实例稳定键恢复/幂等/非法 400）
 │   ├── test_backup_ui.js    # 备份界面 9 项（自包含；导出下载/导入写入/失败不崩）
+│   ├── test_folder_tree.py  # 文件夹树 22 项（嵌套聚合/前缀匹配/源过滤/多层目录）
+│   ├── test_view_filter.py  # 视图过滤 9 项（未看/有进度/已看完 + 组合筛选）
+│   ├── test_batch_ops.py    # 批量操作 18 项（批量收藏幂等/移除清关联/空列表安全）
+│   ├── test_duplicates.py   # 重复检测 13 项（分组/大小不同不算/源过滤/无重复）
+│   ├── test_tags.py         # 标签 24 项（CRUD/重名/打标签覆盖/筛选/计数与级联）
+│   ├── test_stats_agg.py    # 聚合统计 20 项（分类型计数/目录数/失败目录/空源/多源）
 │   ├── test_demo.py         # 一键演示 30 项（真实可播/Range/封面字幕/数据隔离/重启幂等）
 │   ├── test_release.py      # 发布资产 38 项（可复现 zip/校验和/解压可 import/CHANGELOG/Release 配置）
 │   ├── test_scan_ui.js    # 扫描面板 UI 14 项（增量按钮/完成统计/继续扫描/放弃断点）
@@ -361,7 +425,19 @@ WebSua/
 | GET | `/api/stream/{id}` | 媒体流（Range，`?dl=1` 下载） |
 | GET | `/api/proxy/{id}` | 备用端点（无 Range 全量） |
 | GET | `/api/poster/{id}` | TG 同名封面（无则 404） |
+| GET | `/api/folder-tree` | 目录树（按源分组，每层带 `count` / `total_size`） |
+| GET | `/api/duplicates` | 重复文件组（`name`+`size`，**不算哈希**），含可释放空间 `wasted` |
+| GET/POST | `/api/tags` | 标签列表（带媒体数）/ 新建（重名 409） |
+| DELETE | `/api/tags/{id}` | 删除标签（**只删标签，不删媒体**） |
+| GET/POST | `/api/media/{id}/tags` | 某媒体的标签 / 设置（**全量覆盖**） |
+| POST | `/api/media/batch-fav` | 批量收藏 / 取消收藏（幂等） |
+| POST | `/api/media/batch-remove` | 批量移除索引（**只删 DB，不删远端文件**） |
+| POST | `/api/media/batch-tag` | 批量添加标签（**合并语义**，不解绑已有） |
+| GET | `/api/stats/sources` | 按源聚合统计（媒体数分类型 / 大小 / 目录数 / 失败目录数） |
 | GET/POST | `/api/settings` | 服务端设置（预留） |
+
+> `/api/media` 除原有参数外，另支持 `folder_prefix`（目录前缀匹配，含子目录）、
+> `progress`（`unwatched` / `in_progress` / `finished`）、`tags`（标签 id，`1,2`）。
 
 ---
 
@@ -421,12 +497,27 @@ WebSua/
 
 **Q：想精确缩略图？** 当前纯前端截帧（视频第 1 秒），TG 封面模式可让有封面的视频直接用图。要 ffmpeg 级精确缩略图需加后端依赖，暂未引入以保持零依赖。
 
+**Q：怎么清理重复的备份文件？** 媒体库切到「重复」筛选，会按「文件名 + 大小」列出重复组，
+每组可「保留 1 移除其余」。**只删本地索引，不动远端文件**，操作前会二次确认。
+注意：故意不算文件哈希 —— 算哈希要把每个文件整个拉一遍，TB 级网盘扛不住；
+代价是「内容相同但文件名不同」的重复检测不到。
+
+**Q：标签和收藏有什么不同？** 收藏是单开关（有/无）；标签是自定义分类，
+一个媒体可以打多个标签（如「剧集」「待看」），还能按标签筛选。
+删除标签只删标签本身，不会删媒体。
+
 ## 测试
 
 ```bash
-python tests/run_all.py            # 一键：起隔离服务 → 13 套后端回归 → 自动清理
+python tests/run_all.py            # 一键：起隔离服务 → 19 套后端回归 → 自动清理
 python tests/run_all.py --env-only # 只起隔离测试环境（调试单个测试时用，Ctrl+C 退出）
 python tests/test_compat.py        # 仓库级约束（3.9 语法 / 零依赖 / CI 配置漂移）
+python tests/test_folder_tree.py   # 文件夹树（嵌套聚合 / 前缀匹配 / 源过滤）
+python tests/test_view_filter.py   # 视图过滤（未看 / 有进度 / 已看完）
+python tests/test_batch_ops.py     # 批量操作（批量收藏 / 移除索引）
+python tests/test_duplicates.py    # 重复检测（分组 / 大小不同不算重复）
+python tests/test_tags.py          # 标签（CRUD / 打标签覆盖 / 级联）
+python tests/test_stats_agg.py     # 聚合统计（分类型 / 目录数 / 失败目录）
 python tests/test_release.py       # 发布资产（可复现 zip / 校验和 / CHANGELOG 抽取 / Release 流程）
 python tests/test_demo.py          # 一键演示的回归（自带假服务，不依赖隔离环境）
 node tests/test_browser.js         # 浏览器 60 项（需先起隔离环境）
@@ -454,7 +545,7 @@ test_e2e 直接打主服务并把所有数据源「清掉旧数据」，把用�
 
 ```bash
 python scripts/package.py                 # → dist/WebSua-<版本>.zip + .zip.sha256
-python scripts/changelog_section.py v1.11.0   # 抽取该版本说明（Release 正文用）
+python scripts/changelog_section.py v1.21.0   # 抽取该版本说明（Release 正文用）
 ```
 
 打包的两个刻意设计：
