@@ -239,6 +239,9 @@ def main() -> int:
     results.append(("标签 / 自定义分类", run(
         "标签 CRUD 与重名 / 媒体打标签全量覆盖 / 按标签筛媒体 / 计数与级联删除",
         [PY, "tests/test_tags.py"])))
+    results.append(("按源聚合统计", run(
+        "媒体数分类型 / 大小 / 目录数 / 失败目录数 / 最近扫描 / 空源与多源",
+        [PY, "tests/test_stats_agg.py"])))
     results.append(("一键演示", run(
         "demo.py 零配置起假 WebDAV / 真可解码可拖动 / 数据隔离与护栏 / 重启幂等",
         [PY, "tests/test_demo.py"])))

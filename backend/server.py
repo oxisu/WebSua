@@ -399,6 +399,15 @@ def api_stats(c: Ctx) -> None:
     c.ok(stats=s, sources=[public_source(x) for x in db.list_sources()])
 
 
+@route("GET", r"/api/stats/sources")
+def api_stats_sources(c: Ctx) -> None:
+    """按源聚合统计：媒体数分类型 / 大小 / 目录数 / 失败目录数 / 最近扫描。"""
+    rows = db.source_stats()
+    for r in rows:
+        r["total_size_h"] = human_size(r["total_size"])
+    c.ok(sources=rows)
+
+
 def human_size(n: int | float | None) -> str:
     v = float(n or 0)
     for unit in ("B", "KB", "MB", "GB", "TB"):

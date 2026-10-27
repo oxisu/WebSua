@@ -818,6 +818,40 @@ def find_duplicates(source_ids: list[int] | None = None) -> list[dict[str, Any]]
     return sorted(groups.values(), key=lambda g: g["total_size"], reverse=True)
 
 
+def source_stats() -> list[dict[str, Any]]:
+    """按源聚合统计：媒体数（分类型）/ 大小 / 目录数 / 失败目录数 / 最近扫描。
+
+    用一条聚合 SQL 一次取完，避免每个源各查一次（源多时 N+1 会拖慢页面）。
+    """
+    with _lock:
+        conn = get_conn()
+        rows = conn.execute(
+            """SELECT s.id AS source_id, s.name, s.enabled,
+                      s.last_scan_at, s.last_scan_ms, s.item_count,
+                      COALESCE(SUM(CASE WHEN m.id IS NOT NULL THEN 1 ELSE 0 END), 0) AS media_count,
+                      COALESCE(SUM(CASE WHEN m.kind='video' THEN 1 ELSE 0 END), 0) AS videos,
+                      COALESCE(SUM(CASE WHEN m.kind='image' THEN 1 ELSE 0 END), 0) AS images,
+                      COALESCE(SUM(CASE WHEN m.kind='audio' THEN 1 ELSE 0 END), 0) AS audio,
+                      COALESCE(SUM(m.size), 0) AS total_size
+               FROM sources s
+               LEFT JOIN media m ON m.source_id = s.id
+               GROUP BY s.id ORDER BY s.sort, s.id""").fetchall()
+        out = rows_to_dicts(rows)
+        # 目录数与失败目录数单独聚合（同一连接内，仍是 2 条查询）
+        folders = conn.execute(
+            """SELECT source_id, COUNT(DISTINCT folder) c
+               FROM media WHERE folder != '' GROUP BY source_id""").fetchall()
+        fmap = {r["source_id"]: r["c"] for r in rows_to_dicts(folders)}
+        failed = conn.execute(
+            """SELECT source_id, COUNT(*) c FROM scan_failed
+               GROUP BY source_id""").fetchall()
+        fdmap = {r["source_id"]: r["c"] for r in rows_to_dicts(failed)}
+    for r in out:
+        r["folder_count"] = fmap.get(r["source_id"], 0)
+        r["failed_dirs"] = fdmap.get(r["source_id"], 0)
+    return out
+
+
 def media_counts_by_source() -> list[dict[str, Any]]:
     with _lock:
         rows = get_conn().execute(

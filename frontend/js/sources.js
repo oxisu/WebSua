@@ -12,6 +12,7 @@ export class SourceManager {
         this.onChanged = onChanged || (() => {});
         this.sources = [];
         this.tasks = {};
+        this.statsById = {};           // 按源聚合统计（目录数等）
         this._activeIds = new Set();   // 上一轮轮询时还在跑的任务 id（用于完成Toast）
         this.pollTimer = null;
         this.render();
@@ -21,6 +22,15 @@ export class SourceManager {
         try {
             const data = await api('/api/sources');
             this.sources = data.sources || [];
+            // 并行拉聚合统计（目录数等）。失败不影响主渲染 ——
+            // 统计是锦上添花，不能因为它挂了就让整个数据源页面打不开。
+            try {
+                const st = await api('/api/stats/sources');
+                this.statsById = {};
+                for (const r of (st.sources || [])) this.statsById[r.source_id] = r;
+            } catch {
+                this.statsById = this.statsById || {};
+            }
             this.render();
             // 有进行中/暂停中的扫描任务时自动接上轮询 ——
             // 否则刷新页面后任务状态全丢：暂停中的任务会显示成
@@ -287,7 +297,8 @@ export class SourceManager {
             this._stat(counts.video ?? 0, '视频'),
             this._stat(counts.image ?? 0, '图片'),
             this._stat(counts.audio ?? 0, '音频'),
-            this._stat(formatSize(counts.size_total || 0), '总大小'));
+            this._stat(formatSize(counts.size_total || 0), '总大小'),
+            this._stat((this.statsById[s.id] || {}).folder_count ?? 0, '目录'));
         card.append(stats);
 
         // ---- 上次扫描信息 ----
