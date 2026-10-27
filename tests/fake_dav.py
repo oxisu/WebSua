@@ -292,6 +292,23 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
 
 
+class _Server(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def server_bind(self) -> None:
+        """同 backend/server.py：不反查 DNS。
+
+        标准库 HTTPServer 绑定时会调 socket.getfqdn()，在 CI runner / 受限网络
+        上会卡几十秒，表现为「假服务器一行日志都没打、端口也不通」。
+        """
+        import socketserver
+
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = host
+        self.server_port = port
+
+
 def serve(port, auth=None, ignore_range=False, builder=None):
     """在后台线程起假服务器。
 
@@ -307,8 +324,7 @@ def serve(port, auth=None, ignore_range=False, builder=None):
         FILES.update(builder())
     else:
         build_fixture()
-    srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    srv.daemon_threads = True
+    srv = _Server(("127.0.0.1", port), Handler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     return srv
 
@@ -336,8 +352,7 @@ if __name__ == "__main__":
     IGNORE_RANGE = ignore
     build_fixture()
     _apply_broken_env()
-    srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    srv.daemon_threads = True
+    srv = _Server(("127.0.0.1", port), Handler)
     print(f"假 WebDAV 运行于 http://127.0.0.1:{port}/dav  模式={mode}"
           f"{'（需认证 user/pass）' if auth else ''}"
           f"{'（忽略 Range）' if ignore else ''}")

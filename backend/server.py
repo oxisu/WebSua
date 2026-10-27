@@ -1091,6 +1091,21 @@ class ThreadedServer(ThreadingHTTPServer):
     allow_reuse_address = True
     request_queue_size = 64
 
+    def server_bind(self) -> None:
+        """跳过标准库 `HTTPServer.server_bind` 里的 `socket.getfqdn()`。
+
+        标准库为了让日志里的 `server_name` 好看，会在绑定时**反查一次 DNS**。
+        在受限网络、没有反向解析的局域网、以及 CI runner 上，这一步能卡几十秒
+        甚至一直超时 —— 现象就是「进程活着、端口不通、日志停在启动横幅」。
+        实测 GitHub 的 macOS / Windows runner 上 100% 复现，Linux 正常。
+
+        我们只监听本机或一个明确 IP，主机名没有任何用处，直接用地址即可。
+        """
+        socketserver.TCPServer.server_bind(self)      # 只做 bind + listen
+        host, port = self.server_address[:2]
+        self.server_name = host
+        self.server_port = port
+
     def handle_error(self, request, client_address) -> None:
         """兜底静默：客户端断开（切视频/关页面）在 Windows 上抛
         ConnectionAbortedError(10053)/ConnectionResetError(10054)，
