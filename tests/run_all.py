@@ -31,6 +31,12 @@ for _s in (sys.stdout, sys.stderr):
     except Exception:
         pass
 
+# 子进程统一走 UTF-8：run() 用 utf-8 解码它们的输出，子进程就必须用 utf-8 写。
+# 不设的话，英文区域的 Windows（控制台 cp1252）上**每个用例**都会在打印中文时
+# 抛 UnicodeEncodeError —— CI 上表现成「13 个套件全红、每个都有 Traceback」。
+os.environ["PYTHONIOENCODING"] = "utf-8"
+os.environ["PYTHONUTF8"] = "1"
+
 # 测试专用隔离实例 —— 绝不打用户的服务（8771/8899）和用户数据（data/）！
 # 曾发生过：测试在主端口上「清掉旧数据」把用户刚配好的 123 源全删了。
 PORT = 8792
