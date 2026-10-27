@@ -609,6 +609,7 @@ def query_media(
     limit: int = 60,
     offset: int = 0,
     favorite_only: bool = False,
+    progress_filter: str | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     where, params = ["s.enabled = 1"], []
     if source_ids:
@@ -630,6 +631,12 @@ def query_media(
         params.append(f"%{search}%")
     if favorite_only:
         where.append("m.id IN (SELECT media_id FROM favorites)")
+    if progress_filter == "unwatched":
+        where.append("(p.position IS NULL OR p.position <= 1)")
+    elif progress_filter == "in_progress":
+        where.append("p.position > 1 AND (p.finished IS NULL OR p.finished = 0)")
+    elif progress_filter == "finished":
+        where.append("p.finished = 1")
     clause = " WHERE " + " AND ".join(where)
     orders = {
         "new": "m.indexed_at DESC, m.id DESC",
@@ -661,7 +668,10 @@ def query_media(
                                          natural_key(r.get("name") or "")))
             return rows[offset:offset + limit], len(rows)
         total = conn.execute(
-            f"SELECT COUNT(*) c FROM media m JOIN sources s ON s.id = m.source_id{clause}",
+            f"""SELECT COUNT(*) c FROM media m
+                JOIN sources s ON s.id = m.source_id
+                LEFT JOIN progress p ON p.media_id = m.id
+                LEFT JOIN favorites f ON f.media_id = m.id{clause}""",
             params).fetchone()["c"]
         rows = conn.execute(
             f"""SELECT m.*, s.name AS source_name, s.color AS source_color,

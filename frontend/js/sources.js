@@ -956,6 +956,7 @@ export function icon(name, size = 18, className = '') {
         pause: 'M8 5h3v14H8zM13 5h3v14h-3z',
         stop: 'M6 6h12v12H6z',
         '!': 'M12 22a10 10 0 100-20 10 10 0 000 20zM12 8v4M12 16h.01',
+        clock: 'M12 22a10 10 0 100-20 10 10 0 000 20zM12 6v6l4 2',
     };
     const ns = 'http://www.w3.org/2000/svg';
     const svg = document.createElementNS(ns, 'svg');

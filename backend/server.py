@@ -622,6 +622,7 @@ def api_media(c: Ctx) -> None:
         folder_prefix=c.q("folder_prefix") or None,
         order=c.q("order", "new"), limit=limit, offset=offset,
         favorite_only=c.q("fav") == "1",
+        progress_filter=c.q("progress") or None,
     )
     c.ok(media=[media_dto(r) for r in rows], total=total, limit=limit, offset=offset)
 

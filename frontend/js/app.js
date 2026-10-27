@@ -122,9 +122,12 @@ function buildShell() {
     const libraryView = el('section', { class: 'view', id: 'view-library' });
     const sourcesView = el('section', { class: 'view sources-view', id: 'view-sources' });
 
-    // 媒体库顶部筛选栏：全部 / 历史 / 收藏
+    // 媒体库顶部筛选栏：全部 / 未看 / 有进度 / 已看完 / 历史 / 收藏
     const libFilter = el('div', { class: 'lib-filter' },
         libChip('all', '全部', 'grid'),
+        libChip('unwatched', '未看', 'eye'),
+        libChip('in_progress', '有进度', 'clock'),
+        libChip('finished', '已看完', 'check'),
         libChip('history', '历史', 'log'),
         libChip('fav', '收藏', 'star'));
 
@@ -256,15 +259,17 @@ function libChip(mode, label, ico) {
     }, icon(ico, 14), el('span', {}, label));
 }
 
-/** 切换媒体库的筛选模式（全部/历史/收藏）。 */
+/** 切换媒体库的筛选模式（全部/未看/有进度/已看完/历史/收藏）。 */
 function setLibMode(mode) {
     app.libMode = mode;
     document.querySelectorAll('.lib-chip').forEach(c =>
         c.classList.toggle('active', c.dataset.mode === mode));
     if (app.grid) {
+        const progressMap = { unwatched: 'unwatched', in_progress: 'in_progress', finished: 'finished' };
         app.grid.setFilter({
             history: mode === 'history',
             fav: mode === 'fav',
+            progress: progressMap[mode] || '',
         });
     }
 }

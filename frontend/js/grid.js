@@ -20,7 +20,7 @@ export class MediaGrid {
         this.exhausted = false;
         this.filter = {
             sources: [], kinds: [], folder: '', folder_prefix: '',
-            order: 'new', q: '', fav: false, history: false,
+            order: 'new', q: '', fav: false, history: false, progress: '',
         };
         this._setup();
     }
@@ -85,6 +85,7 @@ export class MediaGrid {
         if (f.folder_prefix) p.set('folder_prefix', f.folder_prefix);
         if (f.q) p.set('q', f.q);
         if (f.fav) p.set('fav', '1');
+        if (f.progress) p.set('progress', f.progress);
         return p.toString();
     }
 
