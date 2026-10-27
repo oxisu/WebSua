@@ -301,6 +301,7 @@ WebSua/
 │   ├── test_backup.py       # 配置导入导出 27 项（脱敏/跨实例稳定键恢复/幂等/非法 400）
 │   ├── test_backup_ui.js    # 备份界面 9 项（自包含；导出下载/导入写入/失败不崩）
 │   ├── test_demo.py         # 一键演示 30 项（真实可播/Range/封面字幕/数据隔离/重启幂等）
+│   ├── test_release.py      # 发布资产 38 项（可复现 zip/校验和/解压可 import/CHANGELOG/Release 配置）
 │   ├── test_scan_ui.js    # 扫描面板 UI 14 项（增量按钮/完成统计/继续扫描/放弃断点）
 │   ├── test_browser.js     # 浏览器 60 项（三断点 × 明暗 × 布局）
 │   ├── test_new_features.js# 新功能 8 项
@@ -309,7 +310,13 @@ WebSua/
 │   ├── audit_ui.js         # 全页面截图审查（3 断点 × 12 场景）
 │   ├── gen_media.js        # 用 MediaRecorder 生成真 webm 素材
 │   └── gen_posters.js      # 生成同名 JPG 封面素材
-├── .github/workflows/ci.yml # CI：三平台 × Python 3.9/3.11/3.13 + 浏览器套件
+├── .github/workflows/
+│   ├── ci.yml              # CI：三平台 × Python 3.9/3.11/3.13 + 浏览器套件
+│   └── release.yml         # 推 v* tag：回归 → 打包 → 创建 Release
+├── scripts/
+│   ├── package.py          # 打可复现 zip（固定时间戳 + 条目排序 + SHA256）
+│   └── changelog_section.py# 从 CHANGELOG 抽版本段落作 Release 说明
+├── CHANGELOG.md            # 更新日志（Release 说明的唯一来源）
 ├── package.json            # 仅开发期依赖（Playwright）；运行 WebSua 不需要 Node
 └── data/
     ├── library.db          # SQLite（自动创建）
@@ -921,9 +928,10 @@ Step 4  假 123 接口 + 回归测试 + 本 README 补真实踩坑（这次是�
 ## 测试
 
 ```bash
-python tests/run_all.py            # 一键：起隔离服务 → 12 套后端回归 → 自动清理
+python tests/run_all.py            # 一键：起隔离服务 → 13 套后端回归 → 自动清理
 python tests/run_all.py --env-only # 只起隔离测试环境（调试单个测试时用，Ctrl+C 退出）
 python tests/test_compat.py        # 仓库级约束（3.9 语法 / 零依赖 / CI 配置漂移）
+python tests/test_release.py       # 发布资产（可复现 zip / 校验和 / CHANGELOG 抽取 / Release 流程）
 python tests/test_demo.py          # 一键演示的回归（自带假服务，不依赖隔离环境）
 node tests/test_browser.js         # 浏览器 60 项（需先起隔离环境）
 node tests/test_ui_polish.js
@@ -940,3 +948,28 @@ node tests/audit_ui.js             # 全页面截图审查
 独立的 `data-test/`——测试里的「清空数据源」「停用源」「删除远端文件」等破坏性操作
 只会作用于隔离实例，**永远不碰你正式的 8771 服务和 `data/` 目录**。历史教训：早期
 test_e2e 直接打主服务并把所有数据源「清掉旧数据」，把用户刚配好的网盘源删光了。
+
+---
+
+## 发布与版本
+
+版本节奏是**一功能一提交一 tag**：每个功能一个小版本，四条提交（后端 / 前端 / 测试 / 文档）
+打完再打 annotated tag，tag 指向该版本最后一个提交。历史见 [CHANGELOG.md](./CHANGELOG.md)。
+
+```bash
+python scripts/package.py                 # → dist/WebSua-<版本>.zip + .zip.sha256
+python scripts/changelog_section.py v1.11.0   # 抽取该版本说明（Release 正文用）
+```
+
+打包的两个刻意设计：
+
+- **可复现**：条目按路径排序 + 固定时间戳，同一份源码打两次 SHA256 完全一致。
+  否则「校验和」这东西根本没有意义。
+- **不打包本机产物**：`data/`、`data-test/`、`*.db`、`*.log`、`__pycache__`、`node_modules`
+  全部排除。发布包里带着别人的媒体库索引是事故，不是功能。
+
+推 `v*` tag 会触发 `.github/workflows/release.yml`：先跑全量回归（**不通过不发布**）→ 打包 →
+从 `CHANGELOG.md` 抽当前版本段落当 Release 说明 → 上传 zip 与 `.sha256`。
+
+发布包解压即可用：`python main.py` 正常启动，`python demo.py` 直接演示。
+包内保留了 `tests/`——`demo.py` 依赖其中的假 WebDAV 与样例视频，砍掉就演示不了。
