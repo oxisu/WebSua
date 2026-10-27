@@ -19,8 +19,8 @@ export class MediaGrid {
         this.loading = false;
         this.exhausted = false;
         this.filter = {
-            sources: [], kinds: [], folder: '', order: 'new',
-            q: '', fav: false, history: false,
+            sources: [], kinds: [], folder: '', folder_prefix: '',
+            order: 'new', q: '', fav: false, history: false,
         };
         this._setup();
     }
@@ -82,6 +82,7 @@ export class MediaGrid {
         if (f.sources.length) p.set('sources', f.sources.join(','));
         if (f.kinds.length) p.set('kinds', f.kinds.join(','));
         if (f.folder) p.set('folder', f.folder);
+        if (f.folder_prefix) p.set('folder_prefix', f.folder_prefix);
         if (f.q) p.set('q', f.q);
         if (f.fav) p.set('fav', '1');
         return p.toString();

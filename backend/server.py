@@ -619,6 +619,7 @@ def api_media(c: Ctx) -> None:
     rows, total = db.query_media(
         source_ids=sids or None, kinds=kinds or None,
         folder=c.q("folder") or None, search=c.q("q") or None,
+        folder_prefix=c.q("folder_prefix") or None,
         order=c.q("order", "new"), limit=limit, offset=offset,
         favorite_only=c.q("fav") == "1",
     )
@@ -685,6 +686,14 @@ def api_folders(c: Ctx) -> None:
         out.append({"source_id": s["id"], "source_name": s["name"],
                     "folders": db.list_folders(s["id"])})
     c.ok(sources=out)
+
+
+@route("GET", r"/api/folder-tree")
+def api_folder_tree(c: Ctx) -> None:
+    """目录树（文件夹树浏览用）。每层带 count / total_size。"""
+    sids = [int(x) for x in c.q_list("sources") if x.isdigit()]
+    tree = db.folder_tree(sids or None)
+    c.ok(sources=tree)
 
 
 @route("GET", r"/api/progress")

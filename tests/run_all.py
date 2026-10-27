@@ -224,6 +224,9 @@ def main() -> int:
     results.append(("配置导入导出 / 备份", run(
         "导出脱敏与含密码 / 跨实例按稳定键恢复收藏与进度 / 幂等与合并语义 / 非法备份 400",
         [PY, "tests/test_backup.py"])))
+    results.append(("文件夹树浏览", run(
+        "树形结构嵌套聚合 / folder_prefix 前缀匹配 / 源过滤 / 多层目录",
+        [PY, "tests/test_folder_tree.py"])))
     results.append(("一键演示", run(
         "demo.py 零配置起假 WebDAV / 真可解码可拖动 / 数据隔离与护栏 / 重启幂等",
         [PY, "tests/test_demo.py"])))

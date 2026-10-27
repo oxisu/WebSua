@@ -603,6 +603,7 @@ def query_media(
     source_ids: list[int] | None = None,
     kinds: list[str] | None = None,
     folder: str | None = None,
+    folder_prefix: str | None = None,
     search: str | None = None,
     order: str = "new",
     limit: int = 60,
@@ -619,6 +620,11 @@ def query_media(
     if folder:
         where.append("m.folder = ?")
         params.append(folder)
+    if folder_prefix:
+        # 前缀匹配：/movies 能匹配 /movies 和 /movies/action 等子目录
+        where.append("(m.folder = ? OR m.folder LIKE ?)")
+        params.append(folder_prefix)
+        params.append(folder_prefix.rstrip("/") + "/%")
     if search:
         where.append("m.name LIKE ?")
         params.append(f"%{search}%")
@@ -681,6 +687,55 @@ def list_folders(source_id: int) -> list[dict[str, Any]]:
                GROUP BY folder ORDER BY folder""", (source_id,)
         ).fetchall()
     return rows_to_dicts(rows)
+
+
+def folder_tree(source_ids: list[int] | None = None) -> list[dict[str, Any]]:
+    """按 source 返回目录树（每层带媒体计数与大小）。
+
+    返回格式：[{"source_id":…, "source_name":…, "tree": [节点…]}]
+    节点：{path, name, count, total_size, children:[…]}
+    """
+    sources = list_sources()
+    out = []
+    for s in sources:
+        if source_ids and s["id"] not in source_ids:
+            continue
+        if not s.get("enabled"):
+            continue
+        with _lock:
+            rows = get_conn().execute(
+                """SELECT folder, COUNT(*) c, COALESCE(SUM(size),0) total
+                   FROM media WHERE source_id = ? AND folder != ''
+                   GROUP BY folder ORDER BY folder""", (s["id"],)
+            ).fetchall()
+        entries = rows_to_dicts(rows)
+        tree = _build_tree(entries)
+        out.append({"source_id": s["id"], "source_name": s["name"],
+                    "source_color": s.get("color"), "tree": tree})
+    return out
+
+
+def _build_tree(entries: list[dict]) -> list[dict]:
+    """把扁平 folder 列表构建成嵌套树。folder 形如 /a/b/c。"""
+    nodes: dict[str, dict] = {}
+    roots: list[dict] = []
+    for e in entries:
+        path = e["folder"]
+        parts = [p for p in path.split("/") if p]
+        for i in range(len(parts)):
+            sub = "/" + "/".join(parts[:i + 1])
+            if sub not in nodes:
+                node = {"path": sub, "name": parts[i],
+                        "count": 0, "total_size": 0, "children": []}
+                nodes[sub] = node
+                parent_path = "/" + "/".join(parts[:i]) if i > 0 else ""
+                if parent_path and parent_path in nodes:
+                    nodes[parent_path]["children"].append(node)
+                else:
+                    roots.append(node)
+            nodes[sub]["count"] += e["c"]
+            nodes[sub]["total_size"] += e["total"]
+    return roots
 
 
 def media_counts_by_source() -> list[dict[str, Any]]:

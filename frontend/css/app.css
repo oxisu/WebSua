@@ -773,6 +773,83 @@ body.queue-collapsed .queue-toggle svg {
   background: var(--brand-grad);
   border-color: transparent;
 }
+
+/* ---- 文件夹树侧栏 ---- */
+.lib-body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+.lib-folder-tree {
+  width: 220px;
+  flex-shrink: 0;
+  overflow-y: auto;
+  border-right: 1px solid var(--line-1);
+  padding: var(--sp-2) 0;
+}
+.ft-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 8px var(--sp-3);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-2);
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+.ft-toggle:hover { color: var(--fg-0); }
+.ft-wrap { padding-bottom: var(--sp-4); }
+.ft-empty { padding: 12px 16px; font-size: 12px; color: var(--fg-3); }
+.ft-source-name {
+  padding: 6px 12px 2px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--fg-3);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border-left: 3px solid var(--brand, #6c5ce7);
+  margin: 4px 12px 2px;
+}
+.ft-node {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 12px;
+  font-size: 13px;
+  color: var(--fg-1);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-radius: var(--r-sm);
+  margin: 0 6px;
+}
+.ft-node:hover { background: var(--bg-2); color: var(--fg-0); }
+.ft-node.ft-active { background: var(--brand-grad); color: #fff; }
+.ft-node.ft-active .ft-count { color: rgba(255,255,255,0.7); }
+.ft-arrow {
+  width: 16px;
+  font-size: 10px;
+  flex-shrink: 0;
+  transition: transform var(--dur-fast) var(--ease);
+  user-select: none;
+}
+.ft-arrow-empty { visibility: hidden; }
+.ft-node.ft-open > .ft-arrow { transform: rotate(90deg); }
+.ft-children { display: none; }
+.ft-node.ft-open + .ft-children { display: block; }
+.ft-name { overflow: hidden; text-overflow: ellipsis; }
+.ft-count {
+  font-size: 11px;
+  color: var(--fg-3);
+  margin-left: auto;
+  flex-shrink: 0;
+}
+/* 手机上树折叠 */
+.ft-collapsed .ft-wrap { display: none; }
 .grid {
   display: grid;
   gap: var(--sp-3);
@@ -1897,6 +1974,21 @@ body.queue-collapsed .queue-toggle svg {
   }
   .nav {
     display: none;
+  }
+  /* 手机端文件夹树：改为横向折叠条 */
+  .lib-folder-tree {
+    width: 100%;
+    border-right: none;
+    border-bottom: 1px solid var(--line-1);
+    max-height: 40px;
+    overflow: hidden;
+  }
+  .lib-folder-tree:not(.ft-collapsed) {
+    max-height: 50vh;
+    overflow-y: auto;
+  }
+  .lib-body {
+    flex-direction: column;
   }
   .sidebar {
     position: fixed;

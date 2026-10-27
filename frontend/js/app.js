@@ -6,6 +6,7 @@ import { $, el, api, initTheme, cycleTheme, showToast, debounce, formatSize, for
 import { loadProgress } from './progress.js';
 import { VideoFeed } from './feed.js';
 import { MediaGrid, toggleFav } from './grid.js';
+import { FolderTree } from './folder-tree.js';
 import { getThumbnail } from './thumbs.js';
 import { SourceManager, icon, openModal, switchRow, field } from './sources.js';
 import { getSetting, setSetting, allSettings, onSettingsChange } from './settings.js';
@@ -126,7 +127,14 @@ function buildShell() {
         libChip('all', '全部', 'grid'),
         libChip('history', '历史', 'log'),
         libChip('fav', '收藏', 'star'));
-    libraryView.append(libFilter);
+
+    // 文件夹树侧栏（媒体库左侧）
+    const folderTreeEl = el('aside', { class: 'lib-folder-tree' });
+
+    // 网格容器（树在左、网格在右）
+    const libBody = el('div', { class: 'lib-body' }, folderTreeEl);
+
+    libraryView.append(libFilter, libBody);
 
     const content = el('main', { class: 'content' }, feedView, libraryView, sourcesView);
 
@@ -203,7 +211,7 @@ function buildShell() {
     app.queue = new PlayQueue();
     app.queue.onChange(() => renderQueue());
     app.feed = new VideoFeed(feedView, { onOpenDetail: renderQueue, queue: app.queue });
-    app.grid = new MediaGrid(libraryView, {
+    app.grid = new MediaGrid(libBody, {
         onPlay: m => {
             switchView('feed');
             // 队列里有的沿队列跳（切目录自然序），没有的普通跳转并按其目录生成队列
@@ -212,8 +220,18 @@ function buildShell() {
         },
         onJump: m => openImageViewer(m),
     });
+    app.folderTree = new FolderTree(folderTreeEl, {
+        onSelect: (path) => {
+            app.grid.setFilter({ folder_prefix: path, folder: '' });
+        },
+    });
+    app.folderTree.load();
     app.srcMgr = new SourceManager(sourcesView, {
-        onChanged: () => { refreshSources(); app.grid?.reset(); },
+        onChanged: () => {
+            refreshSources();
+            app.grid?.reset();
+            app.folderTree?.load();
+        },
     });
     app.srcMgr.load();
     app.libMode = 'all';
