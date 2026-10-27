@@ -292,11 +292,21 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
 
 
-def serve(port, auth=None, ignore_range=False):
+def serve(port, auth=None, ignore_range=False, builder=None):
+    """在后台线程起假服务器。
+
+    builder: 自定义文件表构造函数（返回 {路径: (内容, MIME)}）。
+        一键演示（demo.py）用它铺一棵好看的演示目录树；
+        不传则用测试用的默认 fixture。
+    """
     global REQUIRE_AUTH, IGNORE_RANGE
     REQUIRE_AUTH = auth
     IGNORE_RANGE = ignore_range
-    build_fixture()
+    if builder is not None:
+        FILES.clear()
+        FILES.update(builder())
+    else:
+        build_fixture()
     srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     srv.daemon_threads = True
     threading.Thread(target=srv.serve_forever, daemon=True).start()
