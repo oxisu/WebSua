@@ -2,6 +2,8 @@
 
 [![CI](https://github.com/oxisu/WebSua/actions/workflows/ci.yml/badge.svg)](https://github.com/oxisu/WebSua/actions/workflows/ci.yml)
 
+**简体中文** | [English](./README.en.md)
+
 > **WebSua** ("云刷") — Turn videos scattered across multiple WebDAV drives into
 > one endless, swipeable stream.
 > 多 WebDAV 视频流播放器：把分散在多个网盘里的视频，变成一条可以像刷短视频一样连续播放的视频流。
