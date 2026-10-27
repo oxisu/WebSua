@@ -19,21 +19,12 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PY = sys.executable
 
 # 英文区域的 Windows 控制台是 cp1252，打印中文会 UnicodeEncodeError 把整个
-# 测试跑挂掉。规则：
-#   · 输出不是终端（CI 的 tee / 重定向到文件）→ 用 UTF-8，中文在日志里可读；
-#   · 输出是终端 → 保持控制台原生编码，只把编码错误降级成替换字符。
-for _s in (sys.stdout, sys.stderr):
-    try:
-        if not _s.isatty():
-            _s.reconfigure(encoding="utf-8", errors="replace")
-        else:
-            _s.reconfigure(errors="replace")
-    except Exception:
-        pass
+# 测试跑挂掉。交给共用模块处理（非终端输出走 UTF-8）。
+import _console  # noqa: E402,F401
 
 # 子进程统一走 UTF-8：run() 用 utf-8 解码它们的输出，子进程就必须用 utf-8 写。
-# 不设的话，英文区域的 Windows（控制台 cp1252）上**每个用例**都会在打印中文时
-# 抛 UnicodeEncodeError —— CI 上表现成「13 个套件全红、每个都有 Traceback」。
+# 不设的话，英文区域的 Windows 上**每个用例**都会在打印中文时抛
+# UnicodeEncodeError —— CI 上表现成「13 个套件全红、每个都有 Traceback」。
 os.environ["PYTHONIOENCODING"] = "utf-8"
 os.environ["PYTHONUTF8"] = "1"
 

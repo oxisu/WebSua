@@ -18,6 +18,7 @@
 
 只依赖标准库，能单独跑，也能挂在 run_all 后面。
 """
+import _console  # noqa: E402,F401  —— 纯副作用：控制台编码兜底（Windows cp1252）
 import ast
 import json
 import os

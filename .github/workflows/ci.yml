@@ -17,6 +17,11 @@ jobs:
     name: 后端回归 / ${{ matrix.os }} / Python ${{ matrix.python }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
+    env:
+      # 英文区域的 Windows 控制台是 cp1252，脚本一打印中文就 UnicodeEncodeError。
+      # 在 job 级别强制 UTF-8，CI 日志里的中文也才是可读的。
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: "1"
     strategy:
       fail-fast: false
       matrix:
@@ -43,13 +48,14 @@ jobs:
         run: python tests/run_all.py 2>&1 | tee run-all.log
 
       - name: 安装文档与配置漂移检查
-        run: python tests/test_compat.py
+        shell: bash
+        run: python tests/test_compat.py 2>&1 | tee compat.log
 
-      # 失败时把日志尾部变成一条 annotation：Actions 日志需要登录才能看，
+      # 失败时把日志变成 annotation：Actions 日志需要登录才能看，
       # 而 annotation 通过 check-runs API 是公开可读的 —— 排障时救命。
       - name: 回归失败诊断
         if: failure()
-        run: python scripts/ci_diag.py run-all.log
+        run: python scripts/ci_diag.py run-all.log compat.log
 
       - name: 失败时上传扫描日志与子进程输出
         if: failure()

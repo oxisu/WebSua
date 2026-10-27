@@ -50,20 +50,20 @@ def pick(data: str) -> str:
 
 
 def main() -> int:
-    path = sys.argv[1] if len(sys.argv) > 1 else "run-all.log"
-    title = sys.argv[2] if len(sys.argv) > 2 else "回归失败诊断"
+    paths = sys.argv[1:] or ["run-all.log"]
 
-    try:
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
-            data = f.read()
-    except OSError as e:
-        # 日志都没生成（比如脚本根本没跑起来），也要让 CI 上看得见
-        print(f"::warning title=诊断日志缺失::{os.path.basename(path)}: {e}")
-        return 0
+    for path in paths:
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                data = f.read()
+        except OSError as e:
+            # 日志都没生成（比如脚本根本没跑起来），也要让 CI 上看得见
+            print(f"::warning title=诊断日志缺失::{os.path.basename(path)}: {e}")
+            continue
 
-    tail = pick(data).replace("\r", "")
-    esc = tail.replace("%", "%25").replace("\n", "%0A")
-    print(f"::error title={title}（{os.path.basename(path)}）::{esc}")
+        tail = pick(data).replace("\r", "")
+        esc = tail.replace("%", "%25").replace("\n", "%0A")
+        print(f"::error title=失败诊断（{os.path.basename(path)}）::{esc}")
     return 0
 
 
