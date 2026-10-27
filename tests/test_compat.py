@@ -13,6 +13,8 @@
   4. **CI 配置不漂移**：workflow 里引用的测试脚本必须真实存在，
      矩阵最低版本必须与 main.py 的版本门槛一致。
   5. **开发依赖不外溢**：package.json 只允许有 Playwright 这类测试用 devDependencies。
+  6. **启动路径护栏**：绑定端口不反查 DNS（否则受限网络/CI 上卡死）、
+     入口脚本在 cp1252 控制台下不因打不出中文而崩。
 
 只依赖标准库，能单独跑，也能挂在 run_all 后面。
 """
@@ -20,7 +22,9 @@ import ast
 import json
 import os
 import re
+import subprocess
 import sys
+import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WORKFLOW = os.path.join(ROOT, ".github", "workflows", "ci.yml")
@@ -99,6 +103,59 @@ def top_imports(tree):
             if node.level == 0 and node.module:
                 mods.add(node.module.split(".")[0])
     return mods
+
+
+def check_runtime_guards():
+    """启动路径的两条硬约束 —— 都是 CI 上真踩过的坑。
+
+    1. 绑定时不能反查 DNS：标准库 HTTPServer 会 getfqdn()，在受限网络的 runner
+       上直接卡死，表现是「进程活着、端口不通、日志停在横幅」。
+    2. 控制台编码不能把程序打挂：英文区域 Windows 是 cp1252，打印中文抛
+       UnicodeEncodeError，整个服务起不来。
+    """
+    import socket
+    import time
+
+    sys.path.insert(0, ROOT)
+    sys.path.insert(0, os.path.join(ROOT, "tests"))
+    # 别让这个检查在仓库里创建 data/，用临时目录隔离
+    os.environ.setdefault("WEBSUA_DATA", tempfile.mkdtemp(prefix="websua-compat-"))
+
+    from backend.server import AppHandler, ThreadedServer    # noqa: E402
+    import fake_dav                                          # noqa: E402
+
+    def slow_fqdn(*a, **k):
+        time.sleep(5)                     # 模拟反查 DNS 卡 5 秒
+        return "slow.invalid"
+
+    for label, factory in (
+        ("主服务", lambda: ThreadedServer(("127.0.0.1", 0), AppHandler)),
+        ("假 WebDAV", lambda: fake_dav._Server(("127.0.0.1", 0), fake_dav.Handler)),
+    ):
+        orig = socket.getfqdn
+        socket.getfqdn = slow_fqdn
+        try:
+            t0 = time.time()
+            srv = factory()
+            elapsed = time.time() - t0
+            srv.server_close()
+        finally:
+            socket.getfqdn = orig
+        check(f"{label} 绑定不反查 DNS（getfqdn 慢也秒起）", elapsed < 2.0,
+              f"{elapsed:.2f}s")
+
+    # 入口脚本在 cp1252 控制台下不能崩（--help 就会打印中文）
+    env = {**os.environ, "PYTHONIOENCODING": "cp1252"}
+    for script in ("main.py", "demo.py"):
+        try:
+            r = subprocess.run([sys.executable, script, "--help"], cwd=ROOT,
+                               env=env, capture_output=True, timeout=120)
+            ok, detail = r.returncode == 0, f"rc={r.returncode}"
+            if not ok:
+                detail += " " + r.stderr.decode("utf-8", "replace")[-200:]
+        except subprocess.TimeoutExpired:
+            ok, detail = False, "超时"
+        check(f"{script} 在 cp1252 控制台下不崩", ok, detail)
 
 
 def main():
@@ -210,6 +267,9 @@ def main():
                             ("chrome-win64", "Windows"),
                             ("PLAYWRIGHT_CHROME", "环境变量覆盖")):
             check(f"浏览器探测支持 {label}", hint in js)
+
+    # ---- 7. 启动路径的运行时护栏 ----
+    check_runtime_guards()
 
     print(f"\n结果：通过 {PASS} 项，失败 {FAIL} 项")
     return 0 if FAIL == 0 else 1
