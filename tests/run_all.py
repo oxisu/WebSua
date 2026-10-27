@@ -233,6 +233,9 @@ def main() -> int:
     results.append(("视图过滤", run(
         "未看/有进度/已看完进度筛选 / 与收藏组合",
         [PY, "tests/test_view_filter.py"])))
+    results.append(("重复文件检测", run(
+        "按文件名+大小分组 / 大小不同不算重复 / 源过滤 / 无重复返回空",
+        [PY, "tests/test_duplicates.py"])))
     results.append(("一键演示", run(
         "demo.py 零配置起假 WebDAV / 真可解码可拖动 / 数据隔离与护栏 / 重启幂等",
         [PY, "tests/test_demo.py"])))

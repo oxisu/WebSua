@@ -722,6 +722,22 @@ def api_folder_tree(c: Ctx) -> None:
     c.ok(sources=tree)
 
 
+@route("GET", r"/api/duplicates")
+def api_duplicates(c: Ctx) -> None:
+    """重复文件检测（轻量：文件名 + 大小，不算哈希）。"""
+    sids = [int(x) for x in c.q_list("sources") if x.isdigit()]
+    groups = db.find_duplicates(sids or None)
+    out = []
+    for g in groups:
+        out.append({
+            "name": g["name"], "size": g["size"], "count": g["count"],
+            "total_size": g["total_size"],
+            "items": [media_dto(i) for i in g["items"]],
+        })
+    wasted = sum(g["total_size"] - g["size"] for g in groups)
+    c.ok(groups=out, count=len(out), wasted=wasted)
+
+
 @route("GET", r"/api/progress")
 def api_progress(c: Ctx) -> None:
     c.ok(progress=db.all_progress(0.5))

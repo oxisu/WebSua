@@ -748,6 +748,52 @@ def _build_tree(entries: list[dict]) -> list[dict]:
     return roots
 
 
+def find_duplicates(source_ids: list[int] | None = None) -> list[dict[str, Any]]:
+    """轻量重复检测：按 (文件名, 大小) 分组，返回重复组。
+
+    刻意不上全量哈希 —— 算哈希要把每个文件整个拉一遍，对 TB 级网盘是灾难。
+    (name, size) 已经能覆盖绝大多数真实重复（复制备份、重复下载）。
+    返回：[{name, size, count, total_size, items:[媒体…]}]
+    """
+    where = ["s.enabled = 1"]
+    params: list = []
+    if source_ids:
+        where.append(f"m.source_id IN ({','.join('?' * len(source_ids))})")
+        params += list(source_ids)
+    clause = " WHERE " + " AND ".join(where)
+    with _lock:
+        # 先找出重复的 (name, size) 组合
+        dup_keys = get_conn().execute(
+            f"""SELECT m.name, m.size, COUNT(*) c
+                FROM media m JOIN sources s ON s.id = m.source_id
+                {clause}
+                GROUP BY m.name, m.size HAVING c > 1
+                ORDER BY (c * m.size) DESC""", params).fetchall()
+        if not dup_keys:
+            return []
+        # 再取每组的完整条目（用 IN 一次取完，避免 N+1）
+        conds, vals = [], []
+        for r in dup_keys:
+            conds.append("(m.name = ? AND m.size = ?)")
+            vals += [r["name"], r["size"]]
+        rows = get_conn().execute(
+            f"""SELECT m.*, s.name AS source_name
+                FROM media m JOIN sources s ON s.id = m.source_id
+                WHERE ({' OR '.join(conds)})
+                ORDER BY m.name, m.indexed_at""", vals).fetchall()
+    groups: dict[tuple, dict] = {}
+    for r in rows_to_dicts(rows):
+        key = (r["name"], r["size"])
+        g = groups.setdefault(key, {
+            "name": r["name"], "size": r["size"], "count": 0,
+            "total_size": 0, "items": [],
+        })
+        g["count"] += 1
+        g["total_size"] += r["size"]
+        g["items"].append(r)
+    return sorted(groups.values(), key=lambda g: g["total_size"], reverse=True)
+
+
 def media_counts_by_source() -> list[dict[str, Any]]:
     with _lock:
         rows = get_conn().execute(

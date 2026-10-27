@@ -21,6 +21,7 @@ export class MediaGrid {
         this.filter = {
             sources: [], kinds: [], folder: '', folder_prefix: '',
             order: 'new', q: '', fav: false, history: false, progress: '',
+            duplicates: false,
         };
         this.multiSelect = false;
         this.selected = new Set();   // 选中的 media id
@@ -141,6 +142,11 @@ export class MediaGrid {
         this.loading = true;
         this.moreWrap.innerHTML = '<div class="sk" style="width:120px;height:32px"></div>';
         try {
+            // 重复模式：渲染重复组，不分页
+            if (this.filter.duplicates) {
+                await this._loadDuplicates();
+                return;
+            }
             const endpoint = this.filter.history ? '/api/history' : '/api/media';
             const data = await api(endpoint + '?' + this._query());
             const list = data.history || data.media || [];
@@ -173,6 +179,62 @@ export class MediaGrid {
         } finally {
             this.loading = false;
         }
+    }
+
+    /** 重复模式：拉取重复组并渲染，支持「保留一份移除其余」。 */
+    async _loadDuplicates() {
+        this.grid.innerHTML = '';
+        this.exhausted = true;
+        const data = await api('/api/duplicates');
+        const groups = data.groups || [];
+        this.moreWrap.innerHTML = '';
+        if (!groups.length) {
+            this.grid.append(el('div', {
+                class: 'empty', style: { gridColumn: '1/-1', minHeight: '40vh' },
+            },
+                el('div', { class: 'empty-icon' }, iconOf('check', 30)),
+                el('h3', {}, '没有发现重复文件'),
+                el('p', {}, '按「文件名 + 大小」比对，未发现重复。')));
+            return;
+        }
+        this.moreWrap.append(el('div', {
+            style: { color: 'var(--fg-2)', fontSize: '12px' },
+        }, `共 ${data.count} 组重复，可释放约 ${formatSize(data.wasted || 0)}`));
+        for (const g of groups) {
+            this.grid.append(this._dupGroup(g));
+        }
+    }
+
+    _dupGroup(g) {
+        const itemsWrap = el('div', { class: 'dup-items' });
+        for (const it of g.items) {
+            itemsWrap.append(el('div', { class: 'dup-item' },
+                el('span', { class: 'dup-item-src' }, it.source_name || '—'),
+                el('span', { class: 'dup-item-path', title: it.folder }, it.folder || '/')));
+        }
+        const card = el('div', { class: 'dup-card' },
+            el('div', { class: 'dup-head' },
+                el('span', { class: 'dup-name', title: g.name }, g.name),
+                el('span', { class: 'dup-count' }, `${g.count} 份 · ${formatSize(g.size)}`)),
+            itemsWrap,
+            el('div', { class: 'dup-actions' },
+                el('button', {
+                    class: 'btn btn-sm btn-danger',
+                    onclick: async () => {
+                        // 保留第一条，移除其余
+                        const keep = g.items[0];
+                        const drop = g.items.slice(1).map(i => i.id);
+                        if (!confirm(`保留 ${keep.folder} 下的这份，移除其余 ${drop.length} 份索引？\n（只删本地索引，不删远端文件）`)) return;
+                        try {
+                            await api('/api/media/batch-remove', 'POST', { ids: drop });
+                            showToast(`已移除 ${drop.length} 条重复索引`, 'ok');
+                            await this.reset();
+                        } catch (e) {
+                            showToast('移除失败：' + e.message, 'err');
+                        }
+                    },
+                }, `保留 1 移除 ${g.count - 1}`)));
+        return card;
     }
 
     _renderEmpty() {

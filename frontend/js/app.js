@@ -129,7 +129,8 @@ function buildShell() {
         libChip('in_progress', '有进度', 'clock'),
         libChip('finished', '已看完', 'check'),
         libChip('history', '历史', 'log'),
-        libChip('fav', '收藏', 'star'));
+        libChip('fav', '收藏', 'star'),
+        libChip('duplicates', '重复', 'copy'));
 
     // 多选开关
     const multiBtn = el('button', {
@@ -316,6 +317,7 @@ function setLibMode(mode) {
         app.grid.setFilter({
             history: mode === 'history',
             fav: mode === 'fav',
+            duplicates: mode === 'duplicates',
             progress: progressMap[mode] || '',
         });
     }
