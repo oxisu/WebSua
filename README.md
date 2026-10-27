@@ -1,5 +1,7 @@
 # WebSua - 云刷
 
+[![CI](https://github.com/oxisu/WebSua/actions/workflows/ci.yml/badge.svg)](https://github.com/oxisu/WebSua/actions/workflows/ci.yml)
+
 > **WebSua** ("云刷") — Turn videos scattered across multiple WebDAV drives into
 > one endless, swipeable stream.
 > 多 WebDAV 视频流播放器：把分散在多个网盘里的视频，变成一条可以像刷短视频一样连续播放的视频流。
@@ -283,7 +285,9 @@ WebSua/
 │       └── utils.js        # 请求、格式化、Toast、主题
 ├── tests/
 │   ├── fake_dav.py         # 假 WebDAV（good/auth/norange 三模式，含 24 个批量目录 + 12 集番剧目录；MTIMES 可按文件覆盖 mtime）
-│   ├── run_all.py          # 一键回归：自动起服务、切模式、清端口、跑完清理
+│   ├── run_all.py          # 一键回归：自动起服务、切模式、清端口、跑完清理（Windows/POSIX 都支持）
+│   ├── test_compat.py      # 仓库级约束 22 项（3.9 语法兼容/注解延迟求值/运行时零依赖/CI 配置不漂移）
+│   ├── browser-env.js      # 跨平台探测 Chromium（Win/Linux/macOS + PLAYWRIGHT_CHROME 覆盖）
 │   ├── test_e2e.py         # 端到端 36 项
 │   ├── test_norange.py     # 服务器忽略 Range 时的本地裁剪 17 项
 │   ├── test_edge.py        # 认证/远端删除/密码不外泄 14 项
@@ -305,6 +309,8 @@ WebSua/
 │   ├── audit_ui.js         # 全页面截图审查（3 断点 × 12 场景）
 │   ├── gen_media.js        # 用 MediaRecorder 生成真 webm 素材
 │   └── gen_posters.js      # 生成同名 JPG 封面素材
+├── .github/workflows/ci.yml # CI：三平台 × Python 3.9/3.11/3.13 + 浏览器套件
+├── package.json            # 仅开发期依赖（Playwright）；运行 WebSua 不需要 Node
 └── data/
     ├── library.db          # SQLite（自动创建）
     └── scan.log            # 扫描日志
@@ -915,15 +921,20 @@ Step 4  假 123 接口 + 回归测试 + 本 README 补真实踩坑（这次是�
 ## 测试
 
 ```bash
-python tests/run_all.py            # 一键：起隔离服务 → 11 套后端回归 → 自动清理
+python tests/run_all.py            # 一键：起隔离服务 → 12 套后端回归 → 自动清理
 python tests/run_all.py --env-only # 只起隔离测试环境（调试单个测试时用，Ctrl+C 退出）
-python tests/test_demo.py          # 单独跑一键演示的回归（自带假服务，不依赖隔离环境）
+python tests/test_compat.py        # 仓库级约束（3.9 语法 / 零依赖 / CI 配置漂移）
+python tests/test_demo.py          # 一键演示的回归（自带假服务，不依赖隔离环境）
 node tests/test_browser.js         # 浏览器 60 项（需先起隔离环境）
 node tests/test_ui_polish.js
 node tests/test_pagination.js
 node tests/test_history_tg.js
 node tests/audit_ui.js             # 全页面截图审查
 ```
+
+**CI**（`.github/workflows/ci.yml`）：Ubuntu / Windows / macOS × Python 3.9 / 3.11 / 3.13
+跑全量后端回归，外加一个 Chromium job 跑三个自包含 UI 套件。CI 里装的 Playwright 是
+**开发依赖**，写进 `package.json` 的 `devDependencies`——运行 WebSua 本身不需要 Node。
 
 **测试与用户数据完全隔离**：所有测试跑在 **8792 端口**（假 WebDAV 在 8898），数据目录是
 独立的 `data-test/`——测试里的「清空数据源」「停用源」「删除远端文件」等破坏性操作
