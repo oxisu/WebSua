@@ -1,0 +1,13 @@
+{
+  "name": "websua-dev",
+  "version": "0.0.0",
+  "private": true,
+  "description": "WebSua 的开发期工具依赖（仅浏览器测试用；运行 WebSua 本身不需要 Node，也不需要 npm install）",
+  "scripts": {
+    "test:ui": "node tests/test_failed_dirs_ui.js && node tests/test_access_ui.js && node tests/test_backup_ui.js",
+    "test:all": "python tests/run_all.py"
+  },
+  "devDependencies": {
+    "playwright": "^1.64.1"
+  }
+}

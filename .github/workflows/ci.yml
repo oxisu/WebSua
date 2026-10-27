@@ -1,0 +1,79 @@
+name: CI
+
+# 后端回归跑三平台 × 三个 Python 版本；浏览器套件单独一个 job。
+# 运行 WebSua 本身不需要任何依赖，这里装的都只是「测试用」的东西。
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: 后端回归 / ${{ matrix.os }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.9", "3.11", "3.13"]
+        exclude:
+          # 三平台都覆盖全版本就是 9 个 job，没必要；低版本与高版本各平台各跑一个即可
+          - os: windows-latest
+            python: "3.11"
+          - os: macos-latest
+            python: "3.9"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: 语法检查（含 Python 3.9 兼容性）
+        run: python -m compileall -q backend tests main.py demo.py
+
+      - name: 全量回归（自动起隔离服务，不需要网盘账号）
+        run: python tests/run_all.py
+
+      - name: 安装文档与配置漂移检查
+        run: python tests/test_compat.py
+
+      - name: 失败时上传扫描日志
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scan-log-${{ matrix.os }}-py${{ matrix.python }}
+          path: data-test/scan.log
+          if-no-files-found: ignore
+
+  browser:
+    name: 浏览器套件 / Chromium
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: 安装测试用 Playwright（仅开发依赖）
+        run: |
+          npm install --no-audit --no-fund
+          npx playwright install --with-deps chromium
+
+      - name: 自包含 UI 套件（各自拉起服务）
+        run: |
+          node tests/test_failed_dirs_ui.js
+          node tests/test_access_ui.js
+          node tests/test_backup_ui.js
