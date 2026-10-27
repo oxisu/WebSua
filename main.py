@@ -27,6 +27,15 @@ if sys.version_info < (3, 9):
     sys.stderr.write("需要 Python 3.9 或更高版本，当前为 %s\n" % sys.version.split()[0])
     sys.exit(1)
 
+# 英文区域的 Windows 控制台默认是 cp1252，打印中文会抛 UnicodeEncodeError
+# 直接把程序打挂（CI 上就是这么红的）。这里把编码错误降级成替换字符：
+# 宁可显示成一堆 '?'，也不能因为「打不出字」而启动失败。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(errors="replace")
+    except Exception:
+        pass
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from backend import auth, db, scanner      # noqa: E402

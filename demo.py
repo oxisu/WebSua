@@ -33,8 +33,11 @@ REAL_DATA = os.path.join(ROOT, "data")
 
 # 输出被重定向到文件/管道时，默认的块缓冲会让提示「憋住」不显示，
 # 演示脚本的提示是给人看的，宁可牺牲一点性能也要实时打印。
+# 同时把编码错误降级成替换字符：英文区域的 Windows 控制台是 cp1252，
+# 打中文会 UnicodeEncodeError 把演示直接打挂。
 try:
-    sys.stdout.reconfigure(line_buffering=True)
+    sys.stdout.reconfigure(line_buffering=True, errors="replace")
+    sys.stderr.reconfigure(errors="replace")
 except Exception:
     pass
 
