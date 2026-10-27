@@ -7,6 +7,17 @@
 
 ## [未发布]
 
+## [1.11.3] - 2026-10-27
+
+### 修复
+
+- **CI 里单独跑 `test_compat.py` 的步骤在 Windows 上崩**：`run_all` 已经给子进程设了
+  UTF-8，但 workflow 里那一步是直接跑脚本，没继承到编码设置，第一行中文就
+  `UnicodeEncodeError`。现在 job 级统一 `PYTHONIOENCODING=utf-8` / `PYTHONUTF8=1`，
+  并新增 `tests/_console.py` 做控制台兜底（非终端输出走 UTF-8，终端则降级替换字符），
+  `run_all` 与 `test_compat` 都复用它 —— 单独跑哪个脚本都不会再因为编码崩。
+- CI 诊断同时看 `run-all.log` 与 `compat.log`，两个步骤的失败都能定位。
+
 ## [1.11.2] - 2026-10-27
 
 ### 修复
