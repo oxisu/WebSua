@@ -143,6 +143,9 @@ def main() -> int:
     results.append(("局域网访问密码 / 令牌", run(
         "门禁拦截 API 与媒体流 / Cookie·Bearer·token 三种凭据 / 限流 / 非本机绑定强制设密码",
         [PY, "tests/test_access.py"])))
+    results.append(("配置导入导出 / 备份", run(
+        "导出脱敏与含密码 / 跨实例按稳定键恢复收藏与进度 / 幂等与合并语义 / 非法备份 400",
+        [PY, "tests/test_backup.py"])))
 
     # 认证场景需要把假服务器切到 auth 模式
     print("\n  切换假服务器到认证模式…")
