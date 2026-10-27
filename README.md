@@ -35,6 +35,30 @@ python main.py --scan             # 启动后立即扫描所有数据源
 python main.py --host 0.0.0.0 --password 你的密码
 ```
 
+### 先试试看：一键演示（不需要网盘账号）
+
+手上还没有 WebDAV，或者只是想先看看界面长什么样：
+
+```bash
+python demo.py
+```
+
+一条命令做完四件事：在本机起一个**假 WebDAV**（内容由程序生成）→ 用**独立的演示数据目录**
+`data-demo/` 起一个 WebSua 实例（**绝不碰你的 `data/`**）→ 自动建两个演示源并扫描完
+→ 打开浏览器。
+
+演示里能真的播放和拖动进度条（走真实 Range 请求）、有封面、有字幕、有一整季剧集可以验证
+「播完自动下一集」，还预置了一条收藏和一条观看进度，界面一打开就是「用过的样子」。
+
+```bash
+python demo.py --port 8780        # 换端口（假 WebDAV 默认 8897，会自动顺延）
+python demo.py --no-browser       # 只起服务，不自动开浏览器
+python demo.py --reset            # 清空演示数据重新来（只作用于 data-demo/）
+```
+
+> `--reset` 与 `--data` 都有护栏：**不允许**把演示数据写进真实数据目录 `data/`，
+> 也不允许对 `data/` 执行清空。演示数据就是个可随手删掉的沙盒。
+
 ### 常见 WebDAV 地址
 
 | 网盘 | WebDAV 地址 |
@@ -231,6 +255,7 @@ JSON 文件，换机器或重装后一键恢复。这是「测试清空过用户
 ```
 WebSua/
 ├── main.py                 # 启动入口
+├── demo.py                 # 一键演示：假 WebDAV + 隔离数据目录（不改配置就能看到完整界面）
 ├── backend/
 │   ├── config.py           # 扩展名/MIME、扫描参数、限流重试参数
 │   ├── db.py               # SQLite（单连接 + RLock），含轻量迁移
@@ -271,6 +296,7 @@ WebSua/
 │   ├── test_access_ui.js    # 门禁登录界面 9 项（自包含；遮罩/错误提示/登录后放行）
 │   ├── test_backup.py       # 配置导入导出 27 项（脱敏/跨实例稳定键恢复/幂等/非法 400）
 │   ├── test_backup_ui.js    # 备份界面 9 项（自包含；导出下载/导入写入/失败不崩）
+│   ├── test_demo.py         # 一键演示 30 项（真实可播/Range/封面字幕/数据隔离/重启幂等）
 │   ├── test_scan_ui.js    # 扫描面板 UI 14 项（增量按钮/完成统计/继续扫描/放弃断点）
 │   ├── test_browser.js     # 浏览器 60 项（三断点 × 明暗 × 布局）
 │   ├── test_new_features.js# 新功能 8 项
@@ -889,8 +915,9 @@ Step 4  假 123 接口 + 回归测试 + 本 README 补真实踩坑（这次是�
 ## 测试
 
 ```bash
-python tests/run_all.py            # 一键：起隔离服务 → 三套后端回归 → 自动清理
+python tests/run_all.py            # 一键：起隔离服务 → 11 套后端回归 → 自动清理
 python tests/run_all.py --env-only # 只起隔离测试环境（调试单个测试时用，Ctrl+C 退出）
+python tests/test_demo.py          # 单独跑一键演示的回归（自带假服务，不依赖隔离环境）
 node tests/test_browser.js         # 浏览器 60 项（需先起隔离环境）
 node tests/test_ui_polish.js
 node tests/test_pagination.js
