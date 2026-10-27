@@ -14,7 +14,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable
 
-from . import db, scanner, auth
+from . import db, scanner, auth, backup
 from .config import FRONTEND_DIR
 from .stream import WebDAVError, guess_mime, iter_chunks, open_media_stream, parse_range
 from .webdav import WebDAVClient, make_client
@@ -1029,6 +1029,43 @@ def api_get_settings(c: Ctx) -> None:
 def api_set_settings(c: Ctx) -> None:
     db.set_setting("app", c.json())
     c.ok()
+
+
+# ---------- 配置导入导出 / 备份 ----------
+
+@route("GET", r"/api/backup/export")
+def api_backup_export(c: Ctx) -> None:
+    """导出配置与观看数据为 JSON 文件。
+
+    ?passwords=1 时才包含 WebDAV 密码（默认脱敏，只记是否设置过）。
+    """
+    include = c.q("passwords", "") in ("1", "true")
+    data = backup.export_config(include_passwords=include)
+    payload = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
+    fname = f"websua-backup-{time.strftime('%Y%m%d-%H%M%S')}.json"
+    c.send_bytes(payload, "application/json; charset=utf-8",
+                 extra={"Content-Disposition": f'attachment; filename="{fname}"'})
+
+
+@route("POST", r"/api/backup/import")
+def api_backup_import(c: Ctx) -> None:
+    """导入配置（合并语义，不删除已有数据）。"""
+    data = c.json()
+    if not data:
+        c.fail("导入内容为空或不是合法 JSON", 400)
+        return
+    try:
+        summary = backup.import_config(data)
+    except ValueError as e:
+        c.fail(str(e), 400)
+        return
+    scanner.scan_log("info", 0,
+                     "导入配置：源 +{a}/~{u} 收藏 {f} 条 进度 {p} 条".format(
+                         a=summary.get("sources_added"),
+                         u=summary.get("sources_updated"),
+                         f=summary.get("favorites_restored"),
+                         p=summary.get("progress_restored")))
+    c.ok(summary=summary)
 
 
 @route("POST", r"/api/seed-demo")

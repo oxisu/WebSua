@@ -788,6 +788,88 @@ def is_favorite(media_id: int) -> bool:
         ).fetchone() is not None
 
 
+# ---------------- 配置导入导出（跨实例的稳定键）----------------
+
+def find_source_by_key(base_url: str, root_path: str) -> dict[str, Any] | None:
+    """按 (base_url, root_path) 找源。media_id 是本地自增的，跨实例不可用；
+    源的「地址 + 根路径」才是稳定身份。"""
+    base = (base_url or "").rstrip("/")
+    root = root_path or "/"
+    with _lock:
+        row = get_conn().execute(
+            "SELECT * FROM sources WHERE base_url = ? AND COALESCE(root_path, '/') = ?",
+            (base, root)).fetchone()
+    return dict(row) if row else None
+
+
+def media_ids_by_path(source_id: int, paths: list[str]) -> dict[str, int]:
+    """批量把 remote_path 解析成 media_id（导入收藏/进度时用）。"""
+    out: dict[str, int] = {}
+    clean = [p for p in dict.fromkeys(paths) if p]
+    if not clean:
+        return out
+    with _lock:
+        conn = get_conn()
+        for i in range(0, len(clean), 400):
+            chunk = clean[i:i + 400]
+            ph = ",".join("?" * len(chunk))
+            for r in conn.execute(
+                    f"SELECT id, remote_path FROM media "
+                    f"WHERE source_id = ? AND remote_path IN ({ph})",
+                    [source_id, *chunk]):
+                out[r["remote_path"]] = r["id"]
+    return out
+
+
+def add_favorite(media_id: int, created_at: int | None = None) -> bool:
+    """幂等加收藏。已存在返回 False（不覆盖原收藏时间）。"""
+    with _lock:
+        cur = get_conn().execute(
+            "INSERT OR IGNORE INTO favorites (media_id, created_at) VALUES (?,?)",
+            (media_id, int(created_at or time.time())))
+        get_conn().commit()
+    return cur.rowcount > 0
+
+
+def export_favorites() -> list[dict[str, Any]]:
+    with _lock:
+        rows = get_conn().execute(
+            """SELECT s.base_url, COALESCE(s.root_path,'/') AS root_path,
+                      m.remote_path, f.created_at
+               FROM favorites f
+               JOIN media m ON m.id = f.media_id
+               JOIN sources s ON s.id = m.source_id""").fetchall()
+    return rows_to_dicts(rows)
+
+
+def export_progress() -> list[dict[str, Any]]:
+    with _lock:
+        rows = get_conn().execute(
+            """SELECT s.base_url, COALESCE(s.root_path,'/') AS root_path,
+                      m.remote_path, p.position, p.duration, p.watched_at, p.finished
+               FROM progress p
+               JOIN media m ON m.id = p.media_id
+               JOIN sources s ON s.id = m.source_id
+               WHERE p.position > 1""").fetchall()
+    return rows_to_dicts(rows)
+
+
+def set_progress_exact(media_id: int, position: float, duration: float,
+                       watched_at: int, finished: int) -> None:
+    """按导入的原始值写入进度（save_progress 会重算 finished 和 watched_at，
+    恢复备份时应尽量保留原样）。"""
+    with _lock:
+        get_conn().execute(
+            """INSERT INTO progress (media_id, position, duration, watched_at, finished)
+               VALUES (?,?,?,?,?)
+               ON CONFLICT(media_id) DO UPDATE SET
+                 position=excluded.position, duration=excluded.duration,
+                 watched_at=excluded.watched_at, finished=excluded.finished""",
+            (media_id, float(position or 0), float(duration or 0),
+             int(watched_at or time.time()), 1 if finished else 0))
+        get_conn().commit()
+
+
 # ---------------- settings ----------------
 
 def get_setting(key: str, default: Any = None) -> Any:
