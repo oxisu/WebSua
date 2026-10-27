@@ -896,6 +896,44 @@ def add_favorite(media_id: int, created_at: int | None = None) -> bool:
     return cur.rowcount > 0
 
 
+def batch_set_favorite(media_ids: list[int], fav: bool) -> int:
+    """批量收藏 / 取消收藏，返回实际变更数。"""
+    if not media_ids:
+        return 0
+    n = 0
+    with _lock:
+        conn = get_conn()
+        if fav:
+            now = int(time.time())
+            for mid in media_ids:
+                cur = conn.execute(
+                    "INSERT OR IGNORE INTO favorites (media_id, created_at) VALUES (?,?)",
+                    (mid, now))
+                n += cur.rowcount
+        else:
+            ph = ",".join("?" * len(media_ids))
+            cur = conn.execute(
+                f"DELETE FROM favorites WHERE media_id IN ({ph})", media_ids)
+            n = cur.rowcount
+        conn.commit()
+    return n
+
+
+def delete_media(media_ids: list[int]) -> int:
+    """从索引中移除媒体条目（只删 DB，不动远端文件）。返回删除数。"""
+    if not media_ids:
+        return 0
+    with _lock:
+        conn = get_conn()
+        ph = ",".join("?" * len(media_ids))
+        # 先清关联数据
+        conn.execute(f"DELETE FROM favorites WHERE media_id IN ({ph})", media_ids)
+        conn.execute(f"DELETE FROM progress WHERE media_id IN ({ph})", media_ids)
+        cur = conn.execute(f"DELETE FROM media WHERE id IN ({ph})", media_ids)
+        conn.commit()
+    return cur.rowcount
+
+
 def export_favorites() -> list[dict[str, Any]]:
     with _lock:
         rows = get_conn().execute(

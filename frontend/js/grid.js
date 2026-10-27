@@ -22,6 +22,9 @@ export class MediaGrid {
             sources: [], kinds: [], folder: '', folder_prefix: '',
             order: 'new', q: '', fav: false, history: false, progress: '',
         };
+        this.multiSelect = false;
+        this.selected = new Set();   // 选中的 media id
+        this.onSelectionChange = null;
         this._setup();
     }
 
@@ -37,6 +40,50 @@ export class MediaGrid {
             const { scrollTop, scrollHeight, clientHeight } = this.scroll;
             if (scrollHeight - scrollTop - clientHeight < clientHeight * 1.5) this.loadMore();
         }, 200));
+    }
+
+    /** 进入/退出多选模式。 */
+    toggleMultiSelect(force) {
+        this.multiSelect = force !== undefined ? force : !this.multiSelect;
+        if (!this.multiSelect) this.selected.clear();
+        this._refreshSelectionUI();
+    }
+
+    /** 全选当前已加载的项。 */
+    selectAll() {
+        this.items.forEach(m => this.selected.add(m.id));
+        this._refreshSelectionUI();
+    }
+
+    /** 清除选择。 */
+    clearSelection() {
+        this.selected.clear();
+        this._refreshSelectionUI();
+    }
+
+    /** 反选。 */
+    invertSelection() {
+        this.items.forEach(m => {
+            if (this.selected.has(m.id)) this.selected.delete(m.id);
+            else this.selected.add(m.id);
+        });
+        this._refreshSelectionUI();
+    }
+
+    _toggleSelect(id) {
+        if (this.selected.has(id)) this.selected.delete(id);
+        else this.selected.add(id);
+        this._refreshSelectionUI();
+    }
+
+    _refreshSelectionUI() {
+        // 更新卡片视觉
+        this.grid.querySelectorAll('.card').forEach(card => {
+            const id = Number(card.dataset.id);
+            card.classList.toggle('card-selected', this.multiSelect && this.selected.has(id));
+            card.classList.toggle('card-selectable', this.multiSelect);
+        });
+        if (this.onSelectionChange) this.onSelectionChange(this.selected);
     }
 
     setFilter(f) {
@@ -184,7 +231,12 @@ export class MediaGrid {
 
         const card = el('div', {
             class: 'card',
+            dataset: { id: m.id },
             onclick: () => {
+                if (this.multiSelect) {
+                    this._toggleSelect(m.id);
+                    return;
+                }
                 if (m.kind === 'video') this.onPlay(m);
                 else if (m.kind === 'image') this.onJump(m);
                 else showToast('暂不支持直接播放该格式', 'warn');

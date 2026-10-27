@@ -856,6 +856,57 @@ body.queue-collapsed .queue-toggle svg {
   grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
 }
 
+/* ---- 多选模式 ---- */
+.card-selectable {
+  cursor: pointer;
+  outline: 2px solid transparent;
+  transition: outline-color var(--dur-fast) var(--ease);
+}
+.card-selectable:hover {
+  outline-color: var(--brand, #6c5ce7);
+}
+.card-selected {
+  outline: 2px solid var(--brand, #6c5ce7) !important;
+  outline-offset: -2px;
+}
+.card-selected::after {
+  content: '✓';
+  position: absolute;
+  top: 6px; right: 6px;
+  width: 22px; height: 22px;
+  background: var(--brand, #6c5ce7);
+  color: #fff;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 700;
+  z-index: 2;
+}
+
+/* ---- 批量操作栏 ---- */
+.batch-bar {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--bg-1);
+  border-top: 1px solid var(--line-1);
+  z-index: 10;
+}
+.batch-count {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg-1);
+  margin-right: var(--sp-2);
+}
+.lib-multi-btn {
+  margin-left: auto;
+}
+
 .card {
   position: relative;
   border-radius: var(--r-lg);

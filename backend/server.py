@@ -676,6 +676,31 @@ def api_toggle_fav(c: Ctx) -> None:
     c.ok(favorite=db.toggle_favorite(mid))
 
 
+@route("POST", r"/api/media/batch-fav")
+def api_batch_fav(c: Ctx) -> None:
+    """批量收藏 / 取消收藏。body: {ids: [int], fav: bool}"""
+    d = c.json()
+    ids = [int(x) for x in (d.get("ids") or []) if str(x).isdigit()]
+    fav = bool(d.get("fav", True))
+    if not ids:
+        c.fail("缺少 ids", 400)
+        return
+    n = db.batch_set_favorite(ids, fav)
+    c.ok(changed=n, favorite=fav)
+
+
+@route("POST", r"/api/media/batch-remove")
+def api_batch_remove(c: Ctx) -> None:
+    """批量移除索引（只删 DB，不删远端文件）。body: {ids: [int]}"""
+    d = c.json()
+    ids = [int(x) for x in (d.get("ids") or []) if str(x).isdigit()]
+    if not ids:
+        c.fail("缺少 ids", 400)
+        return
+    n = db.delete_media(ids)
+    c.ok(removed=n)
+
+
 @route("GET", r"/api/folders")
 def api_folders(c: Ctx) -> None:
     sids = [int(x) for x in c.q_list("sources") if x.isdigit()]

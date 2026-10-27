@@ -131,13 +131,55 @@ function buildShell() {
         libChip('history', '历史', 'log'),
         libChip('fav', '收藏', 'star'));
 
+    // 多选开关
+    const multiBtn = el('button', {
+        class: 'lib-chip lib-multi-btn',
+        id: 'libMultiBtn',
+        onclick: () => {
+            const on = app.grid.toggleMultiSelect();
+            multiBtn.classList.toggle('active', app.grid.multiSelect);
+            batchBar.style.display = app.grid.multiSelect ? 'flex' : 'none';
+            if (!app.grid.multiSelect) batchBar.classList.remove('has-sel');
+        },
+    }, icon('check', 14), el('span', {}, '多选'));
+
+    // 批量操作栏（多选时底部浮动）
+    const batchCount = el('span', { class: 'batch-count', id: 'batchCount' }, '已选 0 项');
+    const batchBar = el('div', {
+        class: 'batch-bar', id: 'batchBar', style: { display: 'none' },
+    },
+        batchCount,
+        el('button', {
+            class: 'btn btn-sm btn-ghost', onclick: () => app.grid.selectAll(),
+        }, '全选'),
+        el('button', {
+            class: 'btn btn-sm btn-ghost', onclick: () => app.grid.invertSelection(),
+        }, '反选'),
+        el('button', {
+            class: 'btn btn-sm btn-ghost', onclick: () => app.grid.clearSelection(),
+        }, '清除'),
+        el('button', {
+            class: 'btn btn-sm btn-primary', id: 'batchFavBtn',
+            onclick: () => batchAction('fav'),
+        }, '收藏'),
+        el('button', {
+            class: 'btn btn-sm btn-ghost', id: 'batchUnfavBtn',
+            onclick: () => batchAction('unfav'),
+        }, '取消收藏'),
+        el('button', {
+            class: 'btn btn-sm btn-danger', id: 'batchRemoveBtn',
+            onclick: () => batchAction('remove'),
+        }, '移除索引'));
+
+    libFilter.append(multiBtn);
+
     // 文件夹树侧栏（媒体库左侧）
     const folderTreeEl = el('aside', { class: 'lib-folder-tree' });
 
     // 网格容器（树在左、网格在右）
     const libBody = el('div', { class: 'lib-body' }, folderTreeEl);
 
-    libraryView.append(libFilter, libBody);
+    libraryView.append(libFilter, libBody, batchBar);
 
     const content = el('main', { class: 'content' }, feedView, libraryView, sourcesView);
 
@@ -222,6 +264,11 @@ function buildShell() {
             renderQueue();
         },
         onJump: m => openImageViewer(m),
+        onSelectionChange: (sel) => {
+            const n = sel.size;
+            if (batchCount) batchCount.textContent = `已选 ${n} 项`;
+            if (batchBar) batchBar.classList.toggle('has-sel', n > 0);
+        },
     });
     app.folderTree = new FolderTree(folderTreeEl, {
         onSelect: (path) => {
@@ -271,6 +318,32 @@ function setLibMode(mode) {
             fav: mode === 'fav',
             progress: progressMap[mode] || '',
         });
+    }
+}
+
+/** 批量操作：fav / unfav / remove。 */
+async function batchAction(action) {
+    const sel = app.grid?.selected;
+    if (!sel || !sel.size) return;
+    const ids = [...sel];
+    const labels = { fav: '收藏', unfav: '取消收藏', remove: '移除索引' };
+    if (action === 'remove') {
+        if (!confirm(`确定移除 ${ids.length} 条索引？\n只删本地索引，不删远端文件。`)) return;
+    }
+    try {
+        if (action === 'fav' || action === 'unfav') {
+            const r = await api('/api/media/batch-fav', 'POST', {
+                ids, fav: action === 'fav',
+            });
+            showToast(`已${labels[action]} ${r.changed} 条`, 'ok');
+        } else if (action === 'remove') {
+            const r = await api('/api/media/batch-remove', 'POST', { ids });
+            showToast(`已移除 ${r.removed} 条索引`, 'ok');
+        }
+        app.grid.clearSelection();
+        app.grid.reset();
+    } catch (e) {
+        showToast('批量操作失败：' + e.message, 'err');
     }
 }
 

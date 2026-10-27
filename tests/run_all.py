@@ -227,6 +227,12 @@ def main() -> int:
     results.append(("文件夹树浏览", run(
         "树形结构嵌套聚合 / folder_prefix 前缀匹配 / 源过滤 / 多层目录",
         [PY, "tests/test_folder_tree.py"])))
+    results.append(("批量操作", run(
+        "批量收藏取消 / 批量移除索引只删 DB / 关联数据清理 / 幂等与空列表",
+        [PY, "tests/test_batch_ops.py"])))
+    results.append(("视图过滤", run(
+        "未看/有进度/已看完进度筛选 / 与收藏组合",
+        [PY, "tests/test_view_filter.py"])))
     results.append(("一键演示", run(
         "demo.py 零配置起假 WebDAV / 真可解码可拖动 / 数据隔离与护栏 / 重启幂等",
         [PY, "tests/test_demo.py"])))
