@@ -7,6 +7,17 @@
 
 ## [未发布]
 
+## [1.11.2] - 2026-10-27
+
+### 修复
+
+- **Windows 上 13 个套件全红**：`run_all.py` 用 UTF-8 解码子进程输出，却没有告诉子进程
+  用 UTF-8 写。英文区域 Windows 的控制台是 cp1252，每个用例打印第一行中文就抛
+  `UnicodeEncodeError` 退出 —— 表现为「每个套件都有 Traceback」。现在统一给子进程设
+  `PYTHONIOENCODING=utf-8` 与 `PYTHONUTF8=1`，并在本地用 `PYTHONIOENCODING=cp1252`
+  跑全量验证。
+- 套件级超时（300s）与诊断输出 UTF-8，避免一个套件 hang 死整个 job、且注解里全是 `?`。
+
 ## [1.11.1] - 2026-10-27
 
 ### 修复
